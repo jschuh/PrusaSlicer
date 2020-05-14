@@ -22,17 +22,19 @@ set(SLIC3R_GUI_SOURCES
     GUI/ConfigSnapshotDialog.hpp
     GUI/3DScene.cpp
     GUI/3DScene.hpp
+    GUI/format.hpp
     GUI/GLShader.cpp
     GUI/GLShader.hpp    
     GUI/GLCanvas3D.hpp
     GUI/GLCanvas3D.cpp
-    GUI/GLCanvas3DManager.hpp
-    GUI/GLCanvas3DManager.cpp
+    GUI/OpenGLManager.hpp
+    GUI/OpenGLManager.cpp
     GUI/Selection.hpp
     GUI/Selection.cpp    
-    GUI/Gizmos/GLGizmos.hpp
     GUI/Gizmos/GLGizmosManager.cpp
     GUI/Gizmos/GLGizmosManager.hpp
+    GUI/Gizmos/GLGizmosCommon.cpp
+    GUI/Gizmos/GLGizmosCommon.hpp
     GUI/Gizmos/GLGizmoBase.cpp
     GUI/Gizmos/GLGizmoBase.hpp
     GUI/Gizmos/GLGizmoMove.cpp
@@ -43,10 +45,14 @@ set(SLIC3R_GUI_SOURCES
     GUI/Gizmos/GLGizmoScale.hpp
     GUI/Gizmos/GLGizmoSlaSupports.cpp
     GUI/Gizmos/GLGizmoSlaSupports.hpp
+    GUI/Gizmos/GLGizmoFdmSupports.cpp
+    GUI/Gizmos/GLGizmoFdmSupports.hpp
     GUI/Gizmos/GLGizmoFlatten.cpp
     GUI/Gizmos/GLGizmoFlatten.hpp
     GUI/Gizmos/GLGizmoCut.cpp
     GUI/Gizmos/GLGizmoCut.hpp
+    GUI/Gizmos/GLGizmoHollow.cpp
+    GUI/Gizmos/GLGizmoHollow.hpp
     GUI/GLSelectionRectangle.cpp
     GUI/GLSelectionRectangle.hpp
     GUI/GLTexture.hpp
@@ -111,6 +117,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/WipeTowerDialog.hpp
     GUI/RammingChart.cpp
     GUI/RammingChart.hpp
+    GUI/RemovableDriveManager.cpp
+    GUI/RemovableDriveManager.hpp
     GUI/BonjourDialog.cpp
     GUI/BonjourDialog.hpp
     GUI/ButtonsDescription.cpp
@@ -127,19 +135,36 @@ set(SLIC3R_GUI_SOURCES
     Utils/Serial.hpp
     GUI/ConfigWizard.cpp
     GUI/ConfigWizard.hpp
+    GUI/ConfigWizard_private.hpp
     GUI/MsgDialog.cpp
     GUI/MsgDialog.hpp
     GUI/UpdateDialogs.cpp
     GUI/UpdateDialogs.hpp
     GUI/FirmwareDialog.cpp
     GUI/FirmwareDialog.hpp
-    GUI/ProgressIndicator.hpp
-    GUI/ProgressStatusBar.hpp
-    GUI/ProgressStatusBar.cpp
     GUI/PrintHostDialogs.cpp
     GUI/PrintHostDialogs.hpp
+    GUI/Jobs/Job.hpp
+    GUI/Jobs/Job.cpp
+    GUI/Jobs/ArrangeJob.hpp
+    GUI/Jobs/ArrangeJob.cpp
+    GUI/Jobs/RotoptimizeJob.hpp
+    GUI/Jobs/RotoptimizeJob.cpp
+    GUI/Jobs/SLAImportJob.hpp
+    GUI/Jobs/SLAImportJob.cpp
+    GUI/Jobs/ProgressIndicator.hpp
+    GUI/ProgressStatusBar.hpp
+    GUI/ProgressStatusBar.cpp
     GUI/Mouse3DController.cpp
     GUI/Mouse3DController.hpp
+    GUI/DoubleSlider.cpp
+    GUI/DoubleSlider.hpp
+    GUI/ObjectDataViewModel.cpp
+    GUI/ObjectDataViewModel.hpp
+    GUI/InstanceCheck.cpp
+    GUI/InstanceCheck.hpp
+    GUI/Search.cpp
+    GUI/Search.hpp
     Utils/Http.cpp
     Utils/Http.hpp
     Utils/FixModelByWin10.cpp
@@ -150,6 +175,8 @@ set(SLIC3R_GUI_SOURCES
     Utils/Duet.hpp
     Utils/FlashAir.cpp
     Utils/FlashAir.hpp
+    Utils/AstroBox.cpp
+    Utils/AstroBox.hpp
     Utils/PrintHost.cpp
     Utils/PrintHost.hpp
     Utils/Bonjour.cpp
@@ -161,20 +188,48 @@ set(SLIC3R_GUI_SOURCES
     Utils/HexFile.cpp
     Utils/HexFile.hpp
     Utils/Thread.hpp
+    Utils/SLAImport.hpp
+    Utils/SLAImport.cpp
 )
 
 if (APPLE)
     list(APPEND SLIC3R_GUI_SOURCES
             Utils/RetinaHelperImpl.mm
             Utils/MacDarkMode.mm
+            GUI/RemovableDriveManagerMM.mm
+            GUI/RemovableDriveManagerMM.h
+            GUI/Mouse3DHandlerMac.mm
+            GUI/InstanceCheckMac.mm
+            GUI/InstanceCheckMac.h
         )
+    FIND_LIBRARY(DISKARBITRATION_LIBRARY DiskArbitration)
+
 endif ()
 
 add_library(libslic3r_gui STATIC ${SLIC3R_GUI_SOURCES})
 
 encoding_check(libslic3r_gui)
 
-target_link_libraries(libslic3r_gui libslic3r avrdude cereal imgui GLEW::GLEW OpenGL::GL OpenGL::GLU hidapi)
+target_link_libraries(libslic3r_gui libslic3r avrdude cereal imgui GLEW::GLEW OpenGL::GL OpenGL::GLU hidapi libcurl ${wxWidgets_LIBRARIES})
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(libslic3r_gui ${DBUS_LIBRARIES}) 
+endif()
+
+if (SLIC3R_STATIC)
+    # FIXME: This was previously exported by wx-config but the wxWidgets
+    # cmake build forgets this and the build fails in debug mode (or on raspberry release)
+    target_compile_definitions(libslic3r_gui PUBLIC -DwxDEBUG_LEVEL=0)
+endif()
+
+if(APPLE)
+    target_link_libraries(libslic3r_gui ${DISKARBITRATION_LIBRARY})
+endif()
+
+if (SLIC3R_STATIC AND UNIX AND NOT APPLE)
+    target_compile_definitions(libslic3r_gui PRIVATE OPENSSL_CERT_OVERRIDE)
+endif ()
+
 if (SLIC3R_PCH AND NOT SLIC3R_SYNTAXONLY)
     add_precompiled_header(libslic3r_gui pchheader.hpp FORCEINCLUDE)
 endif ()

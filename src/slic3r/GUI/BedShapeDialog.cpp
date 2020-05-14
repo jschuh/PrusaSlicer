@@ -61,9 +61,7 @@ void BedShapePanel::build_panel(const ConfigOptionPoints& default_pt, const Conf
 {
     m_shape = default_pt.values;
     m_custom_texture = custom_texture.value.empty() ? NONE : custom_texture.value;
-    std::replace(m_custom_texture.begin(), m_custom_texture.end(), '\\', '/');
     m_custom_model = custom_model.value.empty() ? NONE : custom_model.value;
-    std::replace(m_custom_model.begin(), m_custom_model.end(), '\\', '/');
 
     auto sbsizer = new wxStaticBoxSizer(wxVERTICAL, this, _(L("Shape")));
     sbsizer->GetStaticBox()->SetFont(wxGetApp().bold_font());
@@ -76,6 +74,8 @@ void BedShapePanel::build_panel(const ConfigOptionPoints& default_pt, const Conf
 	ConfigOptionDef def;
 	def.type = coPoints;
 	def.set_default_value(new ConfigOptionPoints{ Vec2d(200, 200) });
+    def.min = 0;
+    def.max = 1200;
 	def.label = L("Size");
 	def.tooltip = L("Size in X and Y of the rectangular plate.");
 	Option option(def, "rect_size");
@@ -83,6 +83,8 @@ void BedShapePanel::build_panel(const ConfigOptionPoints& default_pt, const Conf
 
 	def.type = coPoints;
 	def.set_default_value(new ConfigOptionPoints{ Vec2d(0, 0) });
+    def.min = -600;
+    def.max = 600;
 	def.label = L("Origin");
 	def.tooltip = L("Distance of the 0,0 G-code coordinate from the front left corner of the rectangle.");
 	option = Option(def, "rect_origin");
@@ -222,7 +224,7 @@ wxPanel* BedShapePanel::init_texture_panel()
                     if (m_custom_texture != NONE)
                     {
                         if (!exists)
-                            tooltip_text += _(L("Not found: "));
+                            tooltip_text += _(L("Not found:")) + " ";
 
                         tooltip_text += _(m_custom_texture);
                     }
@@ -301,7 +303,7 @@ wxPanel* BedShapePanel::init_model_panel()
                     if (m_custom_model != NONE)
                     {
                         if (!exists)
-                            tooltip_text += _(L("Not found: "));
+                            tooltip_text += _(L("Not found:")) + " ";
 
                         tooltip_text += _(m_custom_model);
                     }
@@ -546,8 +548,6 @@ void BedShapePanel::load_texture()
         return;
     }
 
-    std::replace(file_name.begin(), file_name.end(), '\\', '/');
-
     wxBusyCursor wait;
 
     m_custom_texture = file_name;
@@ -570,8 +570,6 @@ void BedShapePanel::load_model()
         show_error(this, _(L("Invalid file format.")));
         return;
     }
-
-    std::replace(file_name.begin(), file_name.end(), '\\', '/');
 
     wxBusyCursor wait;
 

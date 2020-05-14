@@ -41,6 +41,23 @@ inline coordf_t max_layer_height_from_nozzle(const PrintConfig &print_config, in
     return std::max(min_layer_height, (max_layer_height == 0.) ? (0.75 * nozzle_dmr) : max_layer_height);
 }
 
+// Minimum layer height for the variable layer height algorithm.
+coordf_t Slicing::min_layer_height_from_nozzle(const DynamicPrintConfig &print_config, int idx_nozzle)
+{
+    coordf_t min_layer_height = print_config.opt_float("min_layer_height", idx_nozzle - 1);
+    return (min_layer_height == 0.) ? MIN_LAYER_HEIGHT_DEFAULT : std::max(MIN_LAYER_HEIGHT, min_layer_height);
+}
+
+// Maximum layer height for the variable layer height algorithm, 3/4 of a nozzle dimaeter by default,
+// it should not be smaller than the minimum layer height.
+coordf_t Slicing::max_layer_height_from_nozzle(const DynamicPrintConfig &print_config, int idx_nozzle)
+{
+    coordf_t min_layer_height = min_layer_height_from_nozzle(print_config, idx_nozzle);
+    coordf_t max_layer_height = print_config.opt_float("max_layer_height", idx_nozzle - 1);
+    coordf_t nozzle_dmr       = print_config.opt_float("nozzle_diameter", idx_nozzle - 1);
+    return std::max(min_layer_height, (max_layer_height == 0.) ? (0.75 * nozzle_dmr) : max_layer_height);
+}
+
 SlicingParameters SlicingParameters::create_from_config(
 	const PrintConfig 		&print_config, 
 	const PrintObjectConfig &object_config,
@@ -300,26 +317,14 @@ std::vector<double> layer_height_profile_adaptive(const SlicingParameters& slici
         layer_height_profile.push_back(print_z);
         layer_height_profile.push_back(height);
         print_z += height;
-#if !ENABLE_ADAPTIVE_LAYER_HEIGHT_PROFILE
-        layer_height_profile.push_back(print_z);
-        layer_height_profile.push_back(height);
-#endif // !ENABLE_ADAPTIVE_LAYER_HEIGHT_PROFILE
     }
 
-#if ENABLE_ADAPTIVE_LAYER_HEIGHT_PROFILE
     double z_gap = slicing_params.object_print_z_height() - layer_height_profile[layer_height_profile.size() - 2];
     if (z_gap > 0.0)
     {
         layer_height_profile.push_back(slicing_params.object_print_z_height());
         layer_height_profile.push_back(clamp(slicing_params.min_layer_height, slicing_params.max_layer_height, z_gap));
     }
-#else
-    double last = std::max(slicing_params.first_object_layer_height, layer_height_profile[layer_height_profile.size() - 2]);
-    layer_height_profile.push_back(last);
-    layer_height_profile.push_back(slicing_params.first_object_layer_height);
-    layer_height_profile.push_back(slicing_params.object_print_z_height());
-    layer_height_profile.push_back(slicing_params.first_object_layer_height);
-#endif // ENABLE_ADAPTIVE_LAYER_HEIGHT_PROFILE
 
     return layer_height_profile;
 }

@@ -15,7 +15,6 @@ class wxChoice;
 class wxComboCtrl;
 class wxBitmapComboBox;
 class wxCheckBox;
-class DoubleSlider;
 
 namespace Slic3r {
 
@@ -25,12 +24,17 @@ class BackgroundSlicingProcess;
 class GCodePreviewData;
 class Model;
 
+namespace DoubleSlider {
+    class Control;
+};
+
 namespace GUI {
 
 class GLCanvas3D;
 class GLToolbar;
 class Bed3D;
 struct Camera;
+class Plater;
 
 class View3D : public wxPanel
 {
@@ -38,7 +42,7 @@ class View3D : public wxPanel
     GLCanvas3D* m_canvas;
 
 public:
-    View3D(wxWindow* parent, Bed3D& bed, Camera& camera, GLToolbar& view_toolbar, Model* model, DynamicPrintConfig* config, BackgroundSlicingProcess* process);
+    View3D(wxWindow* parent, Model* model, DynamicPrintConfig* config, BackgroundSlicingProcess* process);
     virtual ~View3D();
 
     wxGLCanvas* get_wxglcanvas() { return m_canvas_widget; }
@@ -66,7 +70,7 @@ public:
     void render();
 
 private:
-    bool init(wxWindow* parent, Bed3D& bed, Camera& camera, GLToolbar& view_toolbar, Model* model, DynamicPrintConfig* config, BackgroundSlicingProcess* process);
+    bool init(wxWindow* parent, Model* model, DynamicPrintConfig* config, BackgroundSlicingProcess* process);
 };
 
 class Preview : public wxPanel
@@ -103,11 +107,11 @@ class Preview : public wxPanel
     bool m_loaded;
     bool m_enabled;
 
-    DoubleSlider*       m_slider {nullptr};
+    DoubleSlider::Control*       m_slider {nullptr};
 
 public:
-    Preview(wxWindow* parent, Bed3D& bed, Camera& camera, GLToolbar& view_toolbar, Model* model, DynamicPrintConfig* config, 
-        BackgroundSlicingProcess* process, GCodePreviewData* gcode_preview_data, std::function<void()> schedule_background_process = [](){});
+    Preview(wxWindow* parent, Model* model, DynamicPrintConfig* config,
+        BackgroundSlicingProcess* process, GCodePreviewData* gcode_preview_data, std::function<void()> schedule_background_process = []() {});
     virtual ~Preview();
 
     wxGLCanvas* get_wxglcanvas() { return m_canvas_widget; }
@@ -116,7 +120,6 @@ public:
     void set_as_dirty();
 
     void set_number_extruders(unsigned int number_extruders);
-    void set_canvas_as_dirty();
     void set_enabled(bool enabled);
     void bed_shape_changed();
     void select_view(const std::string& direction);
@@ -135,7 +138,7 @@ public:
     bool is_loaded() const { return m_loaded; }
 
 private:
-    bool init(wxWindow* parent, Bed3D& bed, Camera& camera, GLToolbar& view_toolbar, Model* model);
+    bool init(wxWindow* parent, Model* model);
 
     void bind_event_handlers();
     void unbind_event_handlers();
@@ -156,10 +159,11 @@ private:
 
     // Create/Update/Reset double slider on 3dPreview
     void create_double_slider();
-    void check_slider_values(std::vector<Model::CustomGCode> &ticks_from_model,
+    void check_slider_values(std::vector<CustomGCode::Item> &ticks_from_model,
                              const std::vector<double> &layers_z);
-    void update_double_slider(const std::vector<double>& layers_z, bool keep_z_range = false);
     void reset_double_slider();
+    void update_double_slider(const std::vector<double>& layers_z, bool keep_z_range = false);
+    void update_double_slider_mode();
     // update DoubleSlider after keyDown in canvas
     void update_double_slider_from_canvas(wxKeyEvent& event);
 
@@ -167,7 +171,6 @@ private:
     void load_print_as_sla();
 
     void on_sliders_scroll_changed(wxCommandEvent& event);
-
 };
 
 } // namespace GUI

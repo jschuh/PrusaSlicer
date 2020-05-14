@@ -105,15 +105,21 @@ void OptionsGroup::add_undo_buttuns_to_sizer(wxSizer* sizer, const t_field& fiel
 	if (!m_show_modified_btns) {
         field->m_Undo_btn->set_as_hidden();
 		field->m_Undo_to_sys_btn->set_as_hidden();
+		field->m_blinking_bmp->Hide();
 		return;
 	}
 
+    sizer->Add(field->m_blinking_bmp, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 2);
 	sizer->Add(field->m_Undo_to_sys_btn, 0, wxALIGN_CENTER_VERTICAL);
 	sizer->Add(field->m_Undo_btn, 0, wxALIGN_CENTER_VERTICAL);
 }
 
 void OptionsGroup::append_line(const Line& line, wxStaticText**	full_Label/* = nullptr*/) {
-	if ( (line.sizer != nullptr || line.widget != nullptr) && line.full_width) {
+	if ( line.full_width && (
+		 line.sizer  != nullptr				|| 
+		 line.widget != nullptr				||
+		!line.get_extra_widgets().empty() ) 
+		) {
 		if (line.sizer != nullptr) {
             sizer->Add(line.sizer, 0, wxEXPAND | wxALL, wxOSX ? 0 : 15);
             return;
@@ -122,11 +128,32 @@ void OptionsGroup::append_line(const Line& line, wxStaticText**	full_Label/* = n
             sizer->Add(line.widget(this->ctrl_parent()), 0, wxEXPAND | wxALL, wxOSX ? 0 : 15);
             return;
         }
+		if (!line.get_extra_widgets().empty()) {
+			const auto h_sizer = new wxBoxSizer(wxHORIZONTAL);
+			sizer->Add(h_sizer, 1, wxEXPAND | wxALL, wxOSX ? 0 : 15);
+
+            bool is_first_item = true;
+			for (auto extra_widget : line.get_extra_widgets()) {
+				h_sizer->Add(extra_widget(this->ctrl_parent()), is_first_item ? 1 : 0, wxLEFT, 15);
+				is_first_item = false;
+			}
+			return;
+		}
     }
 
 	auto option_set = line.get_options();
 	for (auto opt : option_set) 
 		m_options.emplace(opt.opt_id, opt);
+
+	// Set sidetext width for a better alignment of options in line
+	// "m_show_modified_btns==true" means that options groups are in tabs
+	if (option_set.size() > 1 && m_show_modified_btns) {
+		sidetext_width = Field::def_width_thinner();
+		/* Temporary commented till UI-review will be completed
+		if (m_show_modified_btns) // means that options groups are in tabs
+		    sublabel_width = Field::def_width();
+	    */
+	}
 
     // add mode value for current line to m_options_mode
     if (!option_set.empty())
@@ -244,15 +271,16 @@ void OptionsGroup::append_line(const Line& line, wxStaticText**	full_Label/* = n
 		ConfigOptionDef option = opt.opt;
 		wxSizer* sizer_tmp = sizer;
 		// add label if any
-		if (option.label != "") {
+		if (!option.label.empty()) {
 //!			To correct translation by context have to use wxGETTEXT_IN_CONTEXT macro from wxWidget 3.1.1
 			wxString str_label = (option.label == L_CONTEXT("Top", "Layers") || option.label == L_CONTEXT("Bottom", "Layers")) ?
 								_CTX(option.label, "Layers") :
 								_(option.label);
-			label = new wxStaticText(this->ctrl_parent(), wxID_ANY, str_label + ": ", wxDefaultPosition, wxDefaultSize);
+			label = new wxStaticText(this->ctrl_parent(), wxID_ANY, str_label + ": ", wxDefaultPosition, //wxDefaultSize); 
+				wxSize(sublabel_width != -1 ? sublabel_width * wxGetApp().em_unit() : -1, -1), wxALIGN_RIGHT);
 			label->SetBackgroundStyle(wxBG_STYLE_PAINT);
             label->SetFont(wxGetApp().normal_font());
-			sizer_tmp->Add(label, 0, /*wxALIGN_RIGHT |*/ wxALIGN_CENTER_VERTICAL, 0);
+			sizer_tmp->Add(label, 0, wxALIGN_CENTER_VERTICAL, 0);
 		}
 
 		// add field
@@ -274,9 +302,9 @@ void OptionsGroup::append_line(const Line& line, wxStaticText**	full_Label/* = n
 			sizer_tmp->Add(field->getWindow(), 0, wxALIGN_CENTER_VERTICAL, 0);
 		
 		// add sidetext if any
-		if (option.sidetext != "") {
+		if (!option.sidetext.empty() || sidetext_width > 0) {
 			auto sidetext = new wxStaticText(	this->ctrl_parent(), wxID_ANY, _(option.sidetext), wxDefaultPosition, 
-												wxSize(sidetext_width != -1 ? sidetext_width*wxGetApp().em_unit() : -1, -1) /*wxDefaultSize*/, wxALIGN_LEFT);
+												wxSize(sidetext_width != -1 ? sidetext_width*wxGetApp().em_unit() : -1, -1), wxALIGN_LEFT);
 			sidetext->SetBackgroundStyle(wxBG_STYLE_PAINT);
             sidetext->SetFont(wxGetApp().normal_font());
 			sizer_tmp->Add(sidetext, 0, wxLEFT | wxALIGN_CENTER_VERTICAL, 4);
@@ -352,6 +380,9 @@ Option ConfigOptionsGroup::get_option(const std::string& opt_key, int opt_index 
 	std::pair<std::string, int> pair(opt_key, opt_index);
 	m_opt_map.emplace(opt_id, pair);
 
+	if (m_show_modified_btns) // fill group and category values just fro options from Settings Tab 
+	    wxGetApp().sidebar().get_searcher().add_key(opt_id, title, config_category);
+
 	return Option(*m_config->def()->get(opt_key), opt_id);
 }
 
@@ -401,7 +432,9 @@ void ConfigOptionsGroup::back_to_config_value(const DynamicPrintConfig& config, 
 		auto   *nozzle_diameter = dynamic_cast<const ConfigOptionFloats*>(config.option("nozzle_diameter"));
 		value = int(nozzle_diameter->values.size());
 	}
-    else if (m_opt_map.find(opt_key) == m_opt_map.end() || opt_key == "bed_shape") {
+    else if (m_opt_map.find(opt_key) == m_opt_map.end() ||
+		    // This option don't have corresponded field
+		     opt_key == "bed_shape" || opt_key == "compatible_printers" || opt_key == "compatible_prints" ) {
         value = get_config_value(config, opt_key);
         change_opt_value(*m_config, opt_key, value);
         return;
@@ -498,7 +531,7 @@ void ConfigOptionsGroup::msw_rescale()
 
     // update undo buttons : rescale bitmaps
     for (const auto& field : m_fields)
-        field.second->msw_rescale();
+        field.second->msw_rescale(sidetext_width>0);
 
     const int em = em_unit(parent());
 
@@ -618,7 +651,7 @@ boost::any ConfigOptionsGroup::get_config_value(const DynamicPrintConfig& config
 		ret = static_cast<wxString>(config.opt_string(opt_key));
 		break;
 	case coStrings:
-		if (opt_key.compare("compatible_printers") == 0) {
+		if (opt_key == "compatible_printers" || opt_key == "compatible_prints") {
 			ret = config.option<ConfigOptionStrings>(opt_key)->values;
 			break;
 		}
@@ -651,6 +684,9 @@ boost::any ConfigOptionsGroup::get_config_value(const DynamicPrintConfig& config
 			opt_key == "bottom_fill_pattern" ||
 			opt_key == "fill_pattern" ) {
 			ret = static_cast<int>(config.option<ConfigOptionEnum<InfillPattern>>(opt_key)->value);
+		}
+		else if (opt_key.compare("ironing_type") == 0 ) {
+			ret = static_cast<int>(config.option<ConfigOptionEnum<IroningType>>(opt_key)->value);
 		}
 		else if (opt_key.compare("gcode_flavor") == 0 ) {
 			ret = static_cast<int>(config.option<ConfigOptionEnum<GCodeFlavor>>(opt_key)->value);
@@ -703,7 +739,7 @@ Field* ConfigOptionsGroup::get_fieldc(const t_config_option_key& opt_key, int op
 void ogStaticText::SetText(const wxString& value, bool wrap/* = true*/)
 {
 	SetLabel(value);
-    if (wrap) Wrap(40 * wxGetApp().em_unit());
+    if (wrap) Wrap(60 * wxGetApp().em_unit());
 	GetParent()->Layout();
 }
 

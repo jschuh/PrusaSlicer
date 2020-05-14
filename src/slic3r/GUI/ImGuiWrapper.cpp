@@ -7,6 +7,7 @@
 
 #include <boost/format.hpp>
 #include <boost/log/trivial.hpp>
+#include <boost/filesystem.hpp>
 
 #include <wx/string.h>
 #include <wx/event.h>
@@ -15,16 +16,33 @@
 
 #include <GL/glew.h>
 
+#ifndef IMGUI_DEFINE_MATH_OPERATORS
+#define IMGUI_DEFINE_MATH_OPERATORS
+#endif
 #include <imgui/imgui_internal.h>
 
 #include "libslic3r/libslic3r.h"
 #include "libslic3r/Utils.hpp"
 #include "3DScene.hpp"
 #include "GUI.hpp"
+#include "I18N.hpp"
+#include "Search.hpp"
+
+#include "../Utils/MacDarkMode.hpp"
+#include "nanosvg/nanosvg.h"
+#include "nanosvg/nanosvgrast.h"
 
 namespace Slic3r {
 namespace GUI {
 
+
+static const std::map<const char, std::string> font_icons = {
+    {ImGui::PrintIconMarker     , "cog"        },
+    {ImGui::PrinterIconMarker   , "printer"    },
+    {ImGui::PrinterSlaIconMarker, "sla_printer"},
+    {ImGui::FilamentIconMarker  , "spool"      },
+    {ImGui::MaterialIconMarker  , "resin"      }
+};
 
 ImGuiWrapper::ImGuiWrapper()
     : m_glyph_ranges(nullptr)
@@ -254,6 +272,16 @@ bool ImGuiWrapper::begin(const wxString &name, int flags)
     return begin(into_u8(name), flags);
 }
 
+bool ImGuiWrapper::begin(const std::string& name, bool* close, int flags)
+{
+    return ImGui::Begin(name.c_str(), close, (ImGuiWindowFlags)flags);
+}
+
+bool ImGuiWrapper::begin(const wxString& name, bool* close, int flags)
+{
+    return begin(into_u8(name), close, flags);
+}
+
 void ImGuiWrapper::end()
 {
     ImGui::End();
@@ -274,6 +302,12 @@ bool ImGuiWrapper::radio_button(const wxString &label, bool active)
 bool ImGuiWrapper::input_double(const std::string &label, const double &value, const std::string &format)
 {
     return ImGui::InputDouble(label.c_str(), const_cast<double*>(&value), 0.0f, 0.0f, format.c_str());
+}
+
+bool ImGuiWrapper::input_double(const wxString &label, const double &value, const std::string &format)
+{
+    auto label_utf8 = into_u8(label);
+    return input_double(label_utf8, value, format);
 }
 
 bool ImGuiWrapper::input_vec3(const std::string &label, const Vec3d &value, float width, const std::string &format)
@@ -358,7 +392,40 @@ bool ImGuiWrapper::combo(const wxString& label, const std::vector<std::string>& 
     return res;
 }
 
-bool ImGuiWrapper::undo_redo_list(const ImVec2& size, const bool is_undo, bool (*items_getter)(const bool , int , const char**), int& hovered, int& selected)
+// Scroll up for one item 
+static void scroll_up()
+{
+    ImGuiContext& g = *GImGui;
+    ImGuiWindow* window = g.CurrentWindow;
+
+    float item_size_y = window->DC.PrevLineSize.y + g.Style.ItemSpacing.y;
+    float win_top = window->Scroll.y;
+
+    ImGui::SetScrollY(win_top - item_size_y);
+}
+
+// Scroll down for one item 
+static void scroll_down()
+{
+    ImGuiContext& g = *GImGui;
+    ImGuiWindow* window = g.CurrentWindow;
+
+    float item_size_y = window->DC.PrevLineSize.y + g.Style.ItemSpacing.y;
+    float win_top = window->Scroll.y;
+
+    ImGui::SetScrollY(win_top + item_size_y);
+}
+
+static void process_mouse_wheel(int& mouse_wheel)
+{
+    if (mouse_wheel > 0)
+        scroll_up();
+    else if (mouse_wheel < 0)
+        scroll_down();
+    mouse_wheel = 0;
+}
+
+bool ImGuiWrapper::undo_redo_list(const ImVec2& size, const bool is_undo, bool (*items_getter)(const bool , int , const char**), int& hovered, int& selected, int& mouse_wheel)
 {
     bool is_hovered = false;
     ImGui::ListBoxHeader("", size);
@@ -380,8 +447,309 @@ bool ImGuiWrapper::undo_redo_list(const ImVec2& size, const bool is_undo, bool (
         i++;
     }
 
+    if (is_hovered)
+        process_mouse_wheel(mouse_wheel);
+
     ImGui::ListBoxFooter();
     return is_hovered;
+}
+
+// It's a copy of IMGui::Selactable function.
+// But a little beat modified to change a label text.
+// If item is hovered we should use another color for highlighted letters.
+// To do that we push a ColorMarkerHovered symbol at the very beginning of the label
+// This symbol will be used to a color selection for the highlighted letters.
+// see imgui_draw.cpp, void ImFont::RenderText()
+static bool selectable(const char* label, bool selected, ImGuiSelectableFlags flags = 0, const ImVec2& size_arg = ImVec2(0, 0))
+{
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems)
+        return false;
+
+    ImGuiContext& g = *GImGui;
+    const ImGuiStyle& style = g.Style;
+
+    if ((flags & ImGuiSelectableFlags_SpanAllColumns) && window->DC.CurrentColumns) // FIXME-OPT: Avoid if vertically clipped.
+        ImGui::PushColumnsBackground();
+
+    ImGuiID id = window->GetID(label);
+    ImVec2 label_size = ImGui::CalcTextSize(label, NULL, true);
+    ImVec2 size(size_arg.x != 0.0f ? size_arg.x : label_size.x, size_arg.y != 0.0f ? size_arg.y : label_size.y);
+    ImVec2 pos = window->DC.CursorPos;
+    pos.y += window->DC.CurrLineTextBaseOffset;
+    ImRect bb_inner(pos, pos + size);
+    ImGui::ItemSize(size, 0.0f);
+
+    // Fill horizontal space.
+    ImVec2 window_padding = window->WindowPadding;
+    float max_x = (flags & ImGuiSelectableFlags_SpanAllColumns) ? ImGui::GetWindowContentRegionMax().x : ImGui::GetContentRegionMax().x;
+    float w_draw = ImMax(label_size.x, window->Pos.x + max_x - window_padding.x - pos.x);
+    ImVec2 size_draw((size_arg.x != 0 && !(flags & ImGuiSelectableFlags_DrawFillAvailWidth)) ? size_arg.x : w_draw, size_arg.y != 0.0f ? size_arg.y : size.y);
+    ImRect bb(pos, pos + size_draw);
+    if (size_arg.x == 0.0f || (flags & ImGuiSelectableFlags_DrawFillAvailWidth))
+        bb.Max.x += window_padding.x;
+
+    // Selectables are tightly packed together so we extend the box to cover spacing between selectable.
+    const float spacing_x = style.ItemSpacing.x;
+    const float spacing_y = style.ItemSpacing.y;
+    const float spacing_L = IM_FLOOR(spacing_x * 0.50f);
+    const float spacing_U = IM_FLOOR(spacing_y * 0.50f);
+    bb.Min.x -= spacing_L;
+    bb.Min.y -= spacing_U;
+    bb.Max.x += (spacing_x - spacing_L);
+    bb.Max.y += (spacing_y - spacing_U);
+
+    bool item_add;
+    if (flags & ImGuiSelectableFlags_Disabled)
+    {
+        ImGuiItemFlags backup_item_flags = window->DC.ItemFlags;
+        window->DC.ItemFlags |= ImGuiItemFlags_Disabled | ImGuiItemFlags_NoNavDefaultFocus;
+        item_add = ImGui::ItemAdd(bb, id);
+        window->DC.ItemFlags = backup_item_flags;
+    }
+    else
+    {
+        item_add = ImGui::ItemAdd(bb, id);
+    }
+    if (!item_add)
+    {
+        if ((flags & ImGuiSelectableFlags_SpanAllColumns) && window->DC.CurrentColumns)
+            ImGui::PopColumnsBackground();
+        return false;
+    }
+
+    // We use NoHoldingActiveID on menus so user can click and _hold_ on a menu then drag to browse child entries
+    ImGuiButtonFlags button_flags = 0;
+    if (flags & ImGuiSelectableFlags_NoHoldingActiveID) { button_flags |= ImGuiButtonFlags_NoHoldingActiveId; }
+    if (flags & ImGuiSelectableFlags_PressedOnClick) { button_flags |= ImGuiButtonFlags_PressedOnClick; }
+    if (flags & ImGuiSelectableFlags_PressedOnRelease) { button_flags |= ImGuiButtonFlags_PressedOnRelease; }
+    if (flags & ImGuiSelectableFlags_Disabled) { button_flags |= ImGuiButtonFlags_Disabled; }
+    if (flags & ImGuiSelectableFlags_AllowDoubleClick) { button_flags |= ImGuiButtonFlags_PressedOnClickRelease | ImGuiButtonFlags_PressedOnDoubleClick; }
+    if (flags & ImGuiSelectableFlags_AllowItemOverlap) { button_flags |= ImGuiButtonFlags_AllowItemOverlap; }
+
+    if (flags & ImGuiSelectableFlags_Disabled)
+        selected = false;
+
+    const bool was_selected = selected;
+    bool hovered, held;
+    bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held, button_flags);
+
+    // Update NavId when clicking or when Hovering (this doesn't happen on most widgets), so navigation can be resumed with gamepad/keyboard
+    if (pressed || (hovered && (flags & ImGuiSelectableFlags_SetNavIdOnHover)))
+    {
+        if (!g.NavDisableMouseHover && g.NavWindow == window && g.NavLayer == window->DC.NavLayerCurrent)
+        {
+            g.NavDisableHighlight = true;
+            ImGui::SetNavID(id, window->DC.NavLayerCurrent, window->DC.NavFocusScopeIdCurrent);
+        }
+    }
+    if (pressed)
+        ImGui::MarkItemEdited(id);
+
+    if (flags & ImGuiSelectableFlags_AllowItemOverlap)
+        ImGui::SetItemAllowOverlap();
+
+    // In this branch, Selectable() cannot toggle the selection so this will never trigger.
+    if (selected != was_selected) //-V547
+        window->DC.LastItemStatusFlags |= ImGuiItemStatusFlags_ToggledSelection;
+
+    // Render
+    if (held && (flags & ImGuiSelectableFlags_DrawHoveredWhenHeld))
+        hovered = true;
+    if (hovered || selected)
+    {
+        const ImU32 col = ImGui::GetColorU32((held && hovered) ? ImGuiCol_HeaderActive : hovered ? ImGuiCol_HeaderHovered : ImGuiCol_Header);
+        ImGui::RenderFrame(bb.Min, bb.Max, col, false, 0.0f);
+        ImGui::RenderNavHighlight(bb, id, ImGuiNavHighlightFlags_TypeThin | ImGuiNavHighlightFlags_NoRounding);
+    }
+
+    if ((flags & ImGuiSelectableFlags_SpanAllColumns) && window->DC.CurrentColumns)
+    {
+        ImGui::PopColumnsBackground();
+        bb.Max.x -= (ImGui::GetContentRegionMax().x - max_x);
+    }
+
+    // mark a label with a ImGui::ColorMarkerHovered, if item is hovered
+    char* marked_label = new char[255];
+    if (hovered)
+        sprintf(marked_label, "%c%s", ImGui::ColorMarkerHovered, label);
+    else
+        strcpy(marked_label, label);
+
+    if (flags & ImGuiSelectableFlags_Disabled) ImGui::PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
+    ImGui::RenderTextClipped(bb_inner.Min, bb_inner.Max, marked_label, NULL, &label_size, style.SelectableTextAlign, &bb);
+    if (flags & ImGuiSelectableFlags_Disabled) ImGui::PopStyleColor();
+
+    delete[] marked_label;
+
+    // Automatically close popups
+    if (pressed && (window->Flags & ImGuiWindowFlags_Popup) && !(flags & ImGuiSelectableFlags_DontClosePopups) && !(window->DC.ItemFlags & ImGuiItemFlags_SelectableDontClosePopup)) ImGui::CloseCurrentPopup();
+
+    IMGUI_TEST_ENGINE_ITEM_INFO(id, label, window->DC.ItemFlags);
+    return pressed;
+}
+
+// Scroll so that the hovered item is at the top of the window
+static void scroll_y(int hover_id)
+{
+    if (hover_id < 0)
+        return;
+    ImGuiContext& g = *GImGui;
+    ImGuiWindow* window = g.CurrentWindow;
+
+    float item_size_y = window->DC.PrevLineSize.y + g.Style.ItemSpacing.y;
+    float item_delta = 0.5 * item_size_y;
+
+    float item_top = item_size_y * hover_id;
+    float item_bottom = item_top + item_size_y;
+
+    float win_top = window->Scroll.y;
+    float win_bottom = window->Scroll.y + window->Size.y;
+
+    if (item_bottom + item_delta >= win_bottom)
+        ImGui::SetScrollY(win_top + item_size_y);
+    else if (item_top - item_delta <= win_top)
+        ImGui::SetScrollY(win_top - item_size_y);
+}
+
+// Use this function instead of ImGui::IsKeyPressed.
+// ImGui::IsKeyPressed is related for *GImGui.IO.KeysDownDuration[user_key_index]
+// And after first key pressing IsKeyPressed() return "true" always even if key wasn't pressed
+static void process_key_down(ImGuiKey imgui_key, std::function<void()> f)
+{
+    if (ImGui::IsKeyDown(ImGui::GetKeyIndex(imgui_key)))
+    {
+        f();
+        // set KeysDown to false to avoid redundant key down processing
+        ImGuiContext& g = *GImGui;
+        g.IO.KeysDown[ImGui::GetKeyIndex(imgui_key)] = false;
+    }
+}
+
+void ImGuiWrapper::search_list(const ImVec2& size_, bool (*items_getter)(int, const char** label, const char** tooltip), char* search_str,
+                               Search::OptionViewParameters& view_params, int& selected, bool& edited, int& mouse_wheel, bool is_localized)
+{
+    int& hovered_id = view_params.hovered_id;
+    // ImGui::ListBoxHeader("", size);
+    {   
+        // rewrote part of function to add a TextInput instead of label Text
+        ImGuiContext& g = *GImGui;
+        ImGuiWindow* window = ImGui::GetCurrentWindow();
+        if (window->SkipItems)
+            return ;
+
+        const ImGuiStyle& style = g.Style;
+
+        // Size default to hold ~7 items. Fractional number of items helps seeing that we can scroll down/up without looking at scrollbar.
+        ImVec2 size = ImGui::CalcItemSize(size_, ImGui::CalcItemWidth(), ImGui::GetTextLineHeightWithSpacing() * 7.4f + style.ItemSpacing.y);
+        ImRect frame_bb(window->DC.CursorPos, ImVec2(window->DC.CursorPos.x + size.x, window->DC.CursorPos.y + size.y));
+
+        ImRect bb(frame_bb.Min, frame_bb.Max);
+        window->DC.LastItemRect = bb; // Forward storage for ListBoxFooter.. dodgy.
+        g.NextItemData.ClearFlags();
+
+        if (!ImGui::IsRectVisible(bb.Min, bb.Max))
+        {
+            ImGui::ItemSize(bb.GetSize(), style.FramePadding.y);
+            ImGui::ItemAdd(bb, 0, &frame_bb);
+            return ;
+        }
+
+        ImGui::BeginGroup();
+
+        const ImGuiID id = ImGui::GetID(search_str);
+        ImVec2 search_size = ImVec2(size.x, ImGui::GetTextLineHeightWithSpacing() + style.ItemSpacing.y);
+
+        if (!ImGui::IsAnyItemFocused() && !ImGui::IsAnyItemActive() && !ImGui::IsMouseClicked(0))
+            ImGui::SetKeyboardFocusHere(0);
+
+        // The press on Esc key invokes editing of InputText (removes last changes)
+        // So we should save previous value...
+        std::string str = search_str;
+        ImGui::InputTextEx("", NULL, search_str, 20, search_size, ImGuiInputTextFlags_AutoSelectAll, NULL, NULL);
+        edited = ImGui::IsItemEdited();
+        if (edited)
+            hovered_id = 0;
+
+        process_key_down(ImGuiKey_Escape, [&selected, search_str, str]() {
+            // use 9999 to mark selection as a Esc key
+            selected = 9999;
+            // ... and when Esc key was pressed, than revert search_str value
+            strcpy(search_str, str.c_str());
+        });
+
+        ImGui::BeginChildFrame(id, frame_bb.GetSize());
+    }
+
+    int i = 0;
+    const char* item_text;
+    const char* tooltip;
+    int mouse_hovered = -1;
+
+    while (items_getter(i, &item_text, &tooltip))
+    {
+        selectable(item_text, i == hovered_id);
+
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s", /*item_text*/tooltip);
+                hovered_id = -1;
+            mouse_hovered = i;
+        }
+
+        if (ImGui::IsItemClicked())
+            selected = i;
+        i++;
+    }
+
+    // Process mouse wheel
+    if (mouse_hovered > 0)
+        process_mouse_wheel(mouse_wheel);
+
+    // process Up/DownArrows and Enter
+    process_key_down(ImGuiKey_UpArrow, [&hovered_id, mouse_hovered]() {
+        if (mouse_hovered > 0)
+            scroll_up();
+        else {
+            if (hovered_id > 0)
+                --hovered_id;
+            scroll_y(hovered_id);
+        }
+    });
+
+    process_key_down(ImGuiKey_DownArrow, [&hovered_id, mouse_hovered, i]() {
+        if (mouse_hovered > 0)
+            scroll_down();
+        else {
+            if (hovered_id < 0)
+                hovered_id = 0;
+            else if (hovered_id < i - 1)
+                ++hovered_id;
+            scroll_y(hovered_id);
+        }
+    });
+
+    process_key_down(ImGuiKey_Enter, [&selected, hovered_id]() {
+        selected = hovered_id;
+    });
+
+    ImGui::ListBoxFooter();
+
+    auto check_box = [&edited, this](const wxString& label, bool& check) {
+        ImGui::SameLine();
+        bool ch = check;
+        checkbox(label, ch);
+        if (ImGui::IsItemClicked()) {
+            check = !check;
+            edited = true;
+        }
+    };
+
+    // add checkboxes for show/hide Categories and Groups
+    text(_L("Use for search")+":");
+    check_box(_L("Category"),   view_params.category);
+    check_box(_L("Group"),      view_params.group);
+    if (is_localized)
+        check_box(_L("Search in English"), view_params.english);
 }
 
 void ImGuiWrapper::disabled_begin(bool disabled)
@@ -425,15 +793,90 @@ bool ImGuiWrapper::want_any_input() const
     return io.WantCaptureMouse || io.WantCaptureKeyboard || io.WantTextInput;
 }
 
+#ifdef __APPLE__
+static const ImWchar ranges_keyboard_shortcuts[] =
+{
+    0x21E7, 0x21E7, // OSX Shift Key symbol
+    0x2318, 0x2318, // OSX Command Key symbol
+    0x2325, 0x2325, // OSX Option Key symbol
+    0,
+};
+#endif // __APPLE__
+
+
+std::vector<unsigned char> ImGuiWrapper::load_svg(const std::string& bitmap_name, unsigned target_width, unsigned target_height)
+{
+#ifdef __APPLE__
+    // Note: win->GetContentScaleFactor() is not used anymore here because it tends to
+    // return bogus results quite often (such as 1.0 on Retina or even 0.0).
+    // We're using the max scaling factor across all screens because it's very likely to be good enough.
+    double	scale = mac_max_scaling_factor();
+#else
+    double	scale = 1.0;
+#endif
+    std::vector<unsigned char> empty_vector;
+
+#ifdef __WXMSW__
+    std::string folder = "white\\";
+#else
+    std::string folder = "white/";
+#endif        
+    if (!boost::filesystem::exists(Slic3r::var(folder + bitmap_name + ".svg")))
+        folder.clear();
+
+    NSVGimage* image = ::nsvgParseFromFile(Slic3r::var(folder + bitmap_name + ".svg").c_str(), "px", 96.0f);
+    if (image == nullptr)
+        return empty_vector;
+
+    target_height != 0 ? target_height *= scale : target_width *= scale;
+
+    float svg_scale = target_height != 0 ?
+        (float)target_height / image->height : target_width != 0 ?
+        (float)target_width / image->width : 1;
+
+    int   width = (int)(svg_scale * image->width + 0.5f);
+    int   height = (int)(svg_scale * image->height + 0.5f);
+    int   n_pixels = width * height;
+    if (n_pixels <= 0) {
+        ::nsvgDelete(image);
+        return empty_vector;
+    }
+
+    NSVGrasterizer* rast = ::nsvgCreateRasterizer();
+    if (rast == nullptr) {
+        ::nsvgDelete(image);
+        return empty_vector;
+    }
+
+    std::vector<unsigned char> data(n_pixels * 4, 0);
+    ::nsvgRasterize(rast, image, 0, 0, svg_scale, data.data(), width, height, width * 4);
+    ::nsvgDeleteRasterizer(rast);
+    ::nsvgDelete(image);
+
+    return data;
+}
+
 void ImGuiWrapper::init_font(bool compress)
 {
     destroy_font();
 
     ImGuiIO& io = ImGui::GetIO();
     io.Fonts->Clear();
-    //FIXME replace with io.Fonts->AddFontFromMemoryTTF(buf_decompressed_data, (int)buf_decompressed_size, m_font_size, nullptr, m_glyph_ranges);
+
+    // Create ranges of characters from m_glyph_ranges, possibly adding some OS specific special characters.
+	ImVector<ImWchar> ranges;
+	ImFontAtlas::GlyphRangesBuilder builder;
+	builder.AddRanges(m_glyph_ranges);
+#ifdef __APPLE__
+	if (m_font_cjk)
+		// Apple keyboard shortcuts are only contained in the CJK fonts.
+		builder.AddRanges(ranges_keyboard_shortcuts);
+#endif
+	builder.BuildRanges(&ranges); // Build the final result (ordered ranges with all the unique characters submitted)
+
+    //FIXME replace with io.Fonts->AddFontFromMemoryTTF(buf_decompressed_data, (int)buf_decompressed_size, m_font_size, nullptr, ranges.Data);
     //https://github.com/ocornut/imgui/issues/220
-	ImFont* font = io.Fonts->AddFontFromFileTTF((Slic3r::resources_dir() + "/fonts/" + (m_font_cjk ? "NotoSansCJK-Regular.ttc" : "NotoSans-Regular.ttf")).c_str(), m_font_size, nullptr, m_glyph_ranges);
+	ImFont* font = io.Fonts->AddFontFromFileTTF((Slic3r::resources_dir() + "/fonts/" + (m_font_cjk ? "NotoSansCJK-Regular.ttc" : "NotoSans-Regular.ttf")).c_str(), m_font_size, nullptr, ranges.Data);
     if (font == nullptr) {
         font = io.Fonts->AddFontDefault();
         if (font == nullptr) {
@@ -441,10 +884,42 @@ void ImGuiWrapper::init_font(bool compress)
         }
     }
 
+#ifdef __APPLE__
+    ImFontConfig config;
+    config.MergeMode = true;
+    if (! m_font_cjk) {
+		// Apple keyboard shortcuts are only contained in the CJK fonts.
+		ImFont *font_cjk = io.Fonts->AddFontFromFileTTF((Slic3r::resources_dir() + "/fonts/NotoSansCJK-Regular.ttc").c_str(), m_font_size, &config, ranges_keyboard_shortcuts);
+        assert(font_cjk != nullptr);
+    }
+#endif
+
+    float font_scale = m_font_size/15;
+    int icon_sz = lround(16 * font_scale); // default size of icon is 16 px
+
+    int rect_id = io.Fonts->CustomRects.Size;  // id of the rectangle added next
+    // add rectangles for the icons to the font atlas
+    for (auto& icon : font_icons)
+        io.Fonts->AddCustomRectFontGlyph(font, icon.first, icon_sz, icon_sz, 3.0 * font_scale + icon_sz);
+
     // Build texture atlas
     unsigned char* pixels;
     int width, height;
     io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);   // Load as RGBA 32-bits (75% of the memory is wasted, but default font is so small) because it is more likely to be compatible with user's existing shaders. If your ImTextureId represent a higher-level concept than just a GL texture id, consider calling GetTexDataAsAlpha8() instead to save on GPU memory.
+
+    // Fill rectangles from the SVG-icons
+    for (auto icon : font_icons) {
+        if (const ImFontAtlas::CustomRect* rect = io.Fonts->GetCustomRectByIndex(rect_id)) {
+            std::vector<unsigned char> raw_data = load_svg(icon.second, icon_sz, icon_sz);
+            const ImU32* pIn = (ImU32*)raw_data.data();
+            for (int y = 0; y < icon_sz; y++) {
+                ImU32* pOut = (ImU32*)pixels + (rect->Y + y) * width + (rect->X);
+                for (int x = 0; x < icon_sz; x++)
+                    *pOut++ = *pIn++;
+            }
+        }
+        rect_id++;
+    }
 
     // Upload texture to graphics system
     GLint last_texture;

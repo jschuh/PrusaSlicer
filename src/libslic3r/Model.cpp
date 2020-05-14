@@ -1,4 +1,5 @@
 #include "Model.hpp"
+#include "ModelArrange.hpp"
 #include "Geometry.hpp"
 #include "MTUtils.hpp"
 
@@ -18,6 +19,8 @@
 
 #include "SVG.hpp"
 #include <Eigen/Dense>
+#include "GCodeWriter.hpp"
+#include "GCode/PreviewData.hpp"
 
 namespace Slic3r {
 
@@ -43,7 +46,7 @@ Model& Model::assign_copy(const Model &rhs)
     }
 
     // copy custom code per height
-    this->custom_gcode_per_height = rhs.custom_gcode_per_height;
+    this->custom_gcode_per_print_z = rhs.custom_gcode_per_print_z;
     return *this;
 }
 
@@ -64,7 +67,7 @@ Model& Model::assign_copy(Model &&rhs)
     rhs.objects.clear();
 
     // copy custom code per height
-    this->custom_gcode_per_height = rhs.custom_gcode_per_height;
+    this->custom_gcode_per_print_z = std::move(rhs.custom_gcode_per_print_z);
     return *this;
 }
 
@@ -124,6 +127,9 @@ Model Model::read_from_file(const std::string& input_file, DynamicPrintConfig* c
     if (add_default_instances)
         model.add_default_instances();
 
+    CustomGCode::update_custom_gcode_per_print_z_from_config(model.custom_gcode_per_print_z, config);
+    CustomGCode::check_mode_for_custom_gcode_per_print_z(model.custom_gcode_per_print_z);
+
     return model;
 }
 
@@ -158,6 +164,9 @@ Model Model::read_from_archive(const std::string& input_file, DynamicPrintConfig
 
     if (add_default_instances)
         model.add_default_instances();
+
+    CustomGCode::update_custom_gcode_per_print_z_from_config(model.custom_gcode_per_print_z, config);
+    CustomGCode::check_mode_for_custom_gcode_per_print_z(model.custom_gcode_per_print_z);
 
     return model;
 }
@@ -347,116 +356,6 @@ TriangleMesh Model::mesh() const
     return mesh;
 }
 
-static bool _arrange(const Pointfs &sizes, coordf_t dist, const BoundingBoxf* bb, Pointfs &out)
-{
-    if (sizes.empty())
-        // return if the list is empty or the following call to BoundingBoxf constructor will lead to a crash
-        return true;
-
-    // we supply unscaled data to arrange()
-    bool result = Slic3r::Geometry::arrange(
-        sizes.size(),               // number of parts
-        BoundingBoxf(sizes).max,    // width and height of a single cell
-        dist,                       // distance between cells
-        bb,                         // bounding box of the area to fill
-        out                         // output positions
-    );
-
-    if (!result && bb != nullptr) {
-        // Try to arrange again ignoring bb
-        result = Slic3r::Geometry::arrange(
-            sizes.size(),               // number of parts
-            BoundingBoxf(sizes).max,    // width and height of a single cell
-            dist,                       // distance between cells
-            nullptr,                    // bounding box of the area to fill
-            out                         // output positions
-        );
-    }
-    
-    return result;
-}
-
-/*  arrange objects preserving their instance count
-    but altering their instance positions */
-bool Model::arrange_objects(coordf_t dist, const BoundingBoxf* bb)
-{    
-    size_t count = 0;
-    for (auto obj : objects) count += obj->instances.size();
-    
-    arrangement::ArrangePolygons input;
-    ModelInstancePtrs instances;
-    input.reserve(count);
-    instances.reserve(count);
-    for (ModelObject *mo : objects)
-        for (ModelInstance *minst : mo->instances) {
-            input.emplace_back(minst->get_arrange_polygon());
-            instances.emplace_back(minst);
-        }
-    
-    arrangement::BedShapeHint bedhint;
-    coord_t bedwidth = 0;
-    
-    if (bb) {
-        bedwidth = scaled(bb->size().x());
-        bedhint = arrangement::BedShapeHint(
-            BoundingBox(scaled(bb->min), scaled(bb->max)));
-    }
-
-    arrangement::arrange(input, scaled(dist), bedhint);
-    
-    bool ret = true;
-    coord_t stride = bedwidth + bedwidth / 5;
-    
-    for(size_t i = 0; i < input.size(); ++i) {
-        if (input[i].bed_idx != 0) ret = false;
-        if (input[i].bed_idx >= 0) {
-            input[i].translation += Vec2crd{input[i].bed_idx * stride, 0};
-            instances[i]->apply_arrange_result(input[i].translation,
-                                               input[i].rotation);
-        }
-    }
-    
-    return ret;
-}
-
-// Duplicate the entire model preserving instance relative positions.
-void Model::duplicate(size_t copies_num, coordf_t dist, const BoundingBoxf* bb)
-{
-    Pointfs model_sizes(copies_num-1, to_2d(this->bounding_box().size()));
-    Pointfs positions;
-    if (! _arrange(model_sizes, dist, bb, positions))
-        throw std::invalid_argument("Cannot duplicate part as the resulting objects would not fit on the print bed.\n");
-    
-    // note that this will leave the object count unaltered
-    
-    for (ModelObject *o : this->objects) {
-        // make a copy of the pointers in order to avoid recursion when appending their copies
-        ModelInstancePtrs instances = o->instances;
-        for (const ModelInstance *i : instances) {
-            for (const Vec2d &pos : positions) {
-                ModelInstance *instance = o->add_instance(*i);
-                instance->set_offset(instance->get_offset() + Vec3d(pos(0), pos(1), 0.0));
-            }
-        }
-        o->invalidate_bounding_box();
-    }
-}
-
-/*  this will append more instances to each object
-    and then automatically rearrange everything */
-void Model::duplicate_objects(size_t copies_num, coordf_t dist, const BoundingBoxf* bb)
-{
-    for (ModelObject *o : this->objects) {
-        // make a copy of the pointers in order to avoid recursion when appending their copies
-        ModelInstancePtrs instances = o->instances;
-        for (const ModelInstance *i : instances)
-            for (size_t k = 2; k <= copies_num; ++ k)
-                o->add_instance(*i);
-    }
-    
-    this->arrange_objects(dist, bb);
-}
-
 void Model::duplicate_objects_grid(size_t x, size_t y, coordf_t dist)
 {
     if (this->objects.size() > 1) throw "Grid duplication is not supported with multiple objects";
@@ -592,22 +491,6 @@ std::string Model::propose_export_file_name_and_path(const std::string &new_exte
     return boost::filesystem::path(this->propose_export_file_name_and_path()).replace_extension(new_extension).string();
 }
 
-std::vector<std::pair<double, DynamicPrintConfig>> Model::get_custom_tool_changes(double default_layer_height, size_t num_extruders) const
-{
-    std::vector<std::pair<double, DynamicPrintConfig>> custom_tool_changes;
-    if (!custom_gcode_per_height.empty()) {
-        for (const CustomGCode& custom_gcode : custom_gcode_per_height)
-            if (custom_gcode.gcode == ExtruderChangeCode) {
-                DynamicPrintConfig config;
-                // If extruder count in PrinterSettings was changed, use default (0) extruder for extruders, more than num_extruders
-                config.set_key_value("extruder", new ConfigOptionInt(custom_gcode.extruder > num_extruders ? 0 : custom_gcode.extruder));
-                // For correct extruders(tools) changing, we should decrease custom_gcode.height value by one default layer height
-                custom_tool_changes.push_back({ custom_gcode.height - default_layer_height, config });
-            }
-    }
-    return custom_tool_changes;
-}
-
 ModelObject::~ModelObject()
 {
     this->clear_volumes();
@@ -628,6 +511,7 @@ ModelObject& ModelObject::assign_copy(const ModelObject &rhs)
     assert(this->config.id() == rhs.config.id());
     this->sla_support_points          = rhs.sla_support_points;
     this->sla_points_status           = rhs.sla_points_status;
+    this->sla_drain_holes             = rhs.sla_drain_holes;
     this->layer_config_ranges         = rhs.layer_config_ranges;    // #ys_FIXME_experiment
     this->layer_height_profile        = rhs.layer_height_profile;
     this->printable                   = rhs.printable;
@@ -668,6 +552,7 @@ ModelObject& ModelObject::assign_copy(ModelObject &&rhs)
     assert(this->config.id() == rhs.config.id());
     this->sla_support_points          = std::move(rhs.sla_support_points);
     this->sla_points_status           = std::move(rhs.sla_points_status);
+    this->sla_drain_holes             = std::move(rhs.sla_drain_holes);
     this->layer_config_ranges         = std::move(rhs.layer_config_ranges); // #ys_FIXME_experiment
     this->layer_height_profile        = std::move(rhs.layer_height_profile);
     this->origin_translation          = std::move(rhs.origin_translation);
@@ -853,7 +738,7 @@ TriangleMesh ModelObject::mesh() const
 }
 
 // Non-transformed (non-rotated, non-scaled, non-translated) sum of non-modifier object volumes.
-// Currently used by ModelObject::mesh(), to calculate the 2D envelope for 2D platter
+// Currently used by ModelObject::mesh(), to calculate the 2D envelope for 2D plater
 // and to display the object statistics at ModelObject::print_info().
 TriangleMesh ModelObject::raw_mesh() const
 {
@@ -913,10 +798,8 @@ const BoundingBoxf3& ModelObject::raw_bounding_box() const
 
         const Transform3d& inst_matrix = this->instances.front()->get_transformation().get_matrix(true);
         for (const ModelVolume *v : this->volumes)
-        {
             if (v->is_model_part())
                 m_raw_bounding_box.merge(v->mesh().transformed_bounding_box(inst_matrix * v->get_matrix()));
-        }
     }
 	return m_raw_bounding_box;
 }
@@ -1121,17 +1004,19 @@ ModelObjectPtrs ModelObject::cut(size_t instance, coordf_t z, bool keep_upper, b
     if (keep_upper) {
         upper->set_model(nullptr);
         upper->sla_support_points.clear();
+        upper->sla_drain_holes.clear();
         upper->sla_points_status = sla::PointsStatus::NoPoints;
         upper->clear_volumes();
-        upper->input_file = "";
+        upper->input_file.clear();
     }
 
     if (keep_lower) {
         lower->set_model(nullptr);
         lower->sla_support_points.clear();
+        lower->sla_drain_holes.clear();
         lower->sla_points_status = sla::PointsStatus::NoPoints;
         lower->clear_volumes();
-        lower->input_file = "";
+        lower->input_file.clear();
     }
 
     // Because transformations are going to be applied to meshes directly,
@@ -1155,6 +1040,8 @@ ModelObjectPtrs ModelObject::cut(size_t instance, coordf_t z, bool keep_upper, b
     for (ModelVolume *volume : volumes) {
         const auto volume_matrix = volume->get_matrix();
 
+        volume->m_supported_facets.clear();
+
         if (! volume->is_model_part()) {
             // Modifiers are not cut, but we still need to add the instance transformation
             // to the modifier volume transformation to preserve their shape properly.
@@ -1164,7 +1051,8 @@ ModelObjectPtrs ModelObject::cut(size_t instance, coordf_t z, bool keep_upper, b
             if (keep_upper) { upper->add_volume(*volume); }
             if (keep_lower) { lower->add_volume(*volume); }
         }
-        else {
+        else if (! volume->mesh().empty()) {
+            
             TriangleMesh upper_mesh, lower_mesh;
 
             // Transform the mesh by the combined transformation matrix.
@@ -1172,7 +1060,9 @@ ModelObjectPtrs ModelObject::cut(size_t instance, coordf_t z, bool keep_upper, b
 			TriangleMesh mesh(volume->mesh());
 			mesh.transform(instance_matrix * volume_matrix, true);
 			volume->reset_mesh();
-
+            
+            mesh.require_shared_vertices();
+            
             // Perform cut
             TriangleMeshSlicer tms(&mesh);
             tms.cut(float(z), &upper_mesh, &lower_mesh);
@@ -1297,6 +1187,8 @@ void ModelObject::split(ModelObjectPtrs* new_objects)
         }
 
         new_vol->set_offset(Vec3d::Zero());
+        // reset the source to disable reload from disk
+        new_vol->source = ModelVolume::Source();
         new_objects->emplace_back(new_object);
         delete mesh;
     }
@@ -1352,6 +1244,8 @@ void ModelObject::bake_xy_rotation_into_meshes(size_t instance_idx)
         model_volume->set_mirror(Vec3d(1., 1., 1.));
         // Move the reference point of the volume to compensate for the change of the instance trafo.
         model_volume->set_offset(volume_offset_correction * volume_trafo.get_offset());
+        // reset the source to disable reload from disk
+        model_volume->source = ModelVolume::Source();
     }
 
     this->invalidate_bounding_box();
@@ -1663,6 +1557,8 @@ size_t ModelVolume::split(unsigned int max_extruders)
             this->calculate_convex_hull();
             // Assign a new unique ID, so that a new GLVolume will be generated.
             this->set_new_unique_id();
+            // reset the source to disable reload from disk
+            this->source = ModelVolume::Source();
         }
         else
             this->object->volumes.insert(this->object->volumes.begin() + (++ivolume), new ModelVolume(object, *this, std::move(*mesh)));
@@ -1845,6 +1741,41 @@ arrangement::ArrangePolygon ModelInstance::get_arrange_polygon() const
     return ret;
 }
 
+
+std::vector<int> FacetsAnnotation::get_facets(FacetSupportType type) const
+{
+    std::vector<int> out;
+    for (auto& [facet_idx, this_type] : m_data)
+        if (this_type == type)
+            out.push_back(facet_idx);
+    return out;
+}
+
+
+
+void FacetsAnnotation::set_facet(int idx, FacetSupportType type)
+{
+    bool changed = true;
+
+    if (type == FacetSupportType::NONE)
+        changed = m_data.erase(idx) != 0;
+    else
+        m_data[idx] = type;
+
+    if (changed)
+        update_timestamp();
+}
+
+
+
+void FacetsAnnotation::clear()
+{
+    m_data.clear();
+    update_timestamp();
+}
+
+
+
 // Test whether the two models contain the same number of ModelObjects with the same set of IDs
 // ordered in the same order. In that case it is not necessary to kill the background processing.
 bool model_object_list_equal(const Model &model_old, const Model &model_new)
@@ -1907,6 +1838,16 @@ bool model_volume_list_changed(const ModelObject &model_object_old, const ModelO
     }
     return false;
 }
+
+bool model_custom_supports_data_changed(const ModelObject& mo, const ModelObject& mo_new) {
+    assert(! model_volume_list_changed(mo, mo_new, ModelVolumeType::MODEL_PART));
+    assert(mo.volumes.size() == mo_new.volumes.size());
+    for (size_t i=0; i<mo.volumes.size(); ++i) {
+        if (! mo_new.volumes[i]->m_supported_facets.is_same_as(mo.volumes[i]->m_supported_facets))
+            return true;
+    }
+    return false;
+};
 
 extern bool model_has_multi_part_objects(const Model &model)
 {
@@ -1988,6 +1929,7 @@ void check_model_ids_equal(const Model &model1, const Model &model2)
         }
     }
 }
+
 #endif /* NDEBUG */
 
 }

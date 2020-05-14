@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include <boost/filesystem.hpp>
+#include <boost/filesystem/path.hpp>
 
 #include "libslic3r/FileParserError.hpp"
 #include "libslic3r/Semver.hpp"
@@ -29,6 +29,7 @@ struct Version
 
 	bool 		is_slic3r_supported(const Semver &slicer_version) const;
 	bool 		is_current_slic3r_supported() const;
+	bool 		is_current_slic3r_downgrade() const;
 };
 
 // Index of vendor specific config bundle versions and Slic3r compatibilities.
@@ -53,7 +54,7 @@ struct Version
 class Index
 {
 public:
-	typedef std::vector<Version>::const_iterator const_iterator;
+    typedef std::vector<Version>::const_iterator const_iterator;
 	// Read a config index file in the simple format described in the Index class comment.
 	// Throws Slic3r::file_parser_error and the standard std file access exceptions.
 	size_t						load(const boost::filesystem::path &path);

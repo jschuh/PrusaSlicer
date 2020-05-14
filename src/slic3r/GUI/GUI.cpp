@@ -188,6 +188,8 @@ void change_opt_value(DynamicPrintConfig& config, const t_config_option_key& opt
 				opt_key == "bottom_fill_pattern" ||
 				opt_key == "fill_pattern")
 				config.set_key_value(opt_key, new ConfigOptionEnum<InfillPattern>(boost::any_cast<InfillPattern>(value))); 
+			else if (opt_key.compare("ironing_type") == 0)
+				config.set_key_value(opt_key, new ConfigOptionEnum<IroningType>(boost::any_cast<IroningType>(value))); 
 			else if (opt_key.compare("gcode_flavor") == 0)
 				config.set_key_value(opt_key, new ConfigOptionEnum<GCodeFlavor>(boost::any_cast<GCodeFlavor>(value))); 
 			else if (opt_key.compare("support_material_pattern") == 0)
@@ -229,16 +231,28 @@ void show_error(wxWindow* parent, const wxString& message)
 	msg.ShowModal();
 }
 
+void show_error(wxWindow* parent, const char* message)
+{
+	assert(message);
+	show_error(parent, wxString::FromUTF8(message));
+}
+
 void show_error_id(int id, const std::string& message)
 {
 	auto *parent = id != 0 ? wxWindow::FindWindowById(id) : nullptr;
-	show_error(parent, from_u8(message));
+	show_error(parent, message);
 }
 
 void show_info(wxWindow* parent, const wxString& message, const wxString& title)
 {
-	wxMessageDialog msg_wingow(parent, message, title.empty() ? _(L("Notice")) : title, wxOK | wxICON_INFORMATION);
+	wxMessageDialog msg_wingow(parent, message, wxString(SLIC3R_APP_NAME " - ") + (title.empty() ? _(L("Notice")) : title), wxOK | wxICON_INFORMATION);
 	msg_wingow.ShowModal();
+}
+
+void show_info(wxWindow* parent, const char* message, const char* title)
+{
+	assert(message);
+	show_info(parent, wxString::FromUTF8(message), title ? wxString::FromUTF8(title) : wxString());
 }
 
 void warning_catcher(wxWindow* parent, const wxString& message)

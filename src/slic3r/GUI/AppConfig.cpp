@@ -2,22 +2,18 @@
 #include "libslic3r/Utils.hpp"
 #include "AppConfig.hpp"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <utility>
-#include <assert.h>
 #include <vector>
 #include <stdexcept>
 
-#include <boost/filesystem.hpp>
+#include <boost/filesystem/path.hpp>
+#include <boost/filesystem/operations.hpp>
 #include <boost/nowide/cenv.hpp>
 #include <boost/nowide/fstream.hpp>
 #include <boost/property_tree/ini_parser.hpp>
-#include <boost/property_tree/ptree.hpp>
-#include <boost/property_tree/exceptions.hpp>
+#include <boost/property_tree/ptree_fwd.hpp>
 #include <boost/algorithm/string/predicate.hpp>
-#include <boost/format.hpp>
+#include <boost/format/format_fwd.hpp>
 
 #include <wx/string.h>
 #include "I18N.hpp"
@@ -61,6 +57,9 @@ void AppConfig::set_defaults()
     if (get("preset_update").empty())
         set("preset_update", "1");
 
+    if (get("export_sources_full_pathnames").empty())
+        set("export_sources_full_pathnames", "0");
+
     // remove old 'use_legacy_opengl' parameter from this config, if present
     if (!get("use_legacy_opengl").empty())
         erase("", "use_legacy_opengl");
@@ -70,8 +69,14 @@ void AppConfig::set_defaults()
         set("use_retina_opengl", "1");
 #endif
 
+	if (get("single_instance").empty())
+		set("single_instance", "0");
+
     if (get("remember_output_path").empty())
         set("remember_output_path", "1");
+
+    if (get("remember_output_path_removable").empty())
+		set("remember_output_path_removable", "1");
 
     if (get("use_custom_toolbar_size").empty())
         set("use_custom_toolbar_size", "0");
@@ -79,8 +84,14 @@ void AppConfig::set_defaults()
     if (get("custom_toolbar_size").empty())
         set("custom_toolbar_size", "100");
 
+    if (get("auto_toolbar_size").empty())
+        set("auto_toolbar_size", "100");
+
     if (get("use_perspective_camera").empty())
         set("use_perspective_camera", "1");
+
+    if (get("use_free_camera").empty())
+        set("use_free_camera", "0");
 
     // Remove legacy window positions/sizes
     erase("", "main_frame_maximized");
@@ -271,7 +282,7 @@ void AppConfig::set_recent_projects(const std::vector<std::string>& recent_proje
     }
 }
 
-void AppConfig::set_mouse_device(const std::string& name, double translation_speed, double translation_deadzone, float rotation_speed, float rotation_deadzone)
+void AppConfig::set_mouse_device(const std::string& name, double translation_speed, double translation_deadzone, float rotation_speed, float rotation_deadzone, double zoom_speed, bool swap_yz)
 {
     std::string key = std::string("mouse_device:") + name;
     auto it = m_storage.find(key);
@@ -283,66 +294,19 @@ void AppConfig::set_mouse_device(const std::string& name, double translation_spe
     it->second["translation_deadzone"] = std::to_string(translation_deadzone);
     it->second["rotation_speed"] = std::to_string(rotation_speed);
     it->second["rotation_deadzone"] = std::to_string(rotation_deadzone);
+    it->second["zoom_speed"] = std::to_string(zoom_speed);
+    it->second["swap_yz"] = swap_yz ? "1" : "0";
 }
 
-bool AppConfig::get_mouse_device_translation_speed(const std::string& name, double& speed)
+std::vector<std::string> AppConfig::get_mouse_device_names() const
 {
-    std::string key = std::string("mouse_device:") + name;
-    auto it = m_storage.find(key);
-    if (it == m_storage.end())
-        return false;
-
-    auto it_val = it->second.find("translation_speed");
-    if (it_val == it->second.end())
-        return false;
-
-    speed = ::atof(it_val->second.c_str());
-    return true;
-}
-
-bool AppConfig::get_mouse_device_translation_deadzone(const std::string& name, double& deadzone)
-{
-    std::string key = std::string("mouse_device:") + name;
-    auto it = m_storage.find(key);
-    if (it == m_storage.end())
-        return false;
-
-    auto it_val = it->second.find("translation_deadzone");
-    if (it_val == it->second.end())
-        return false;
-
-    deadzone = ::atof(it_val->second.c_str());
-    return true;
-}
-
-bool AppConfig::get_mouse_device_rotation_speed(const std::string& name, float& speed)
-{
-    std::string key = std::string("mouse_device:") + name;
-    auto it = m_storage.find(key);
-    if (it == m_storage.end())
-        return false;
-
-    auto it_val = it->second.find("rotation_speed");
-    if (it_val == it->second.end())
-        return false;
-
-    speed = (float)::atof(it_val->second.c_str());
-    return true;
-}
-
-bool AppConfig::get_mouse_device_rotation_deadzone(const std::string& name, float& deadzone)
-{
-    std::string key = std::string("mouse_device:") + name;
-    auto it = m_storage.find(key);
-    if (it == m_storage.end())
-        return false;
-
-    auto it_val = it->second.find("rotation_deadzone");
-    if (it_val == it->second.end())
-        return false;
-
-    deadzone = (float)::atof(it_val->second.c_str());
-    return true;
+	static constexpr char   *prefix     = "mouse_device:";
+    static constexpr size_t  prefix_len = 13; // strlen(prefix); reports error C2131: expression did not evaluate to a constant on VS2019
+	std::vector<std::string> out;
+    for (const std::pair<std::string, std::map<std::string, std::string>>& key_value_pair : m_storage)
+        if (boost::starts_with(key_value_pair.first, "mouse_device:") && key_value_pair.first.size() > prefix_len)
+            out.emplace_back(key_value_pair.first.substr(prefix_len));
+	return out;
 }
 
 void AppConfig::update_config_dir(const std::string &dir)
@@ -354,9 +318,10 @@ void AppConfig::update_skein_dir(const std::string &dir)
 {
     this->set("recent", "skein_directory", dir);
 }
-
+/*
 std::string AppConfig::get_last_output_dir(const std::string &alt) const
 {
+	
     const auto it = m_storage.find("");
     if (it != m_storage.end()) {
         const auto it2 = it->second.find("last_output_path");
@@ -371,6 +336,26 @@ void AppConfig::update_last_output_dir(const std::string &dir)
 {
     this->set("", "last_output_path", dir);
 }
+*/
+std::string AppConfig::get_last_output_dir(const std::string& alt, const bool removable) const
+{
+	std::string s1 = (removable ? "last_output_path_removable" : "last_output_path");
+	std::string s2 = (removable ? "remember_output_path_removable" : "remember_output_path");
+	const auto it = m_storage.find("");
+	if (it != m_storage.end()) {
+		const auto it2 = it->second.find(s1);
+		const auto it3 = it->second.find(s2);
+		if (it2 != it->second.end() && it3 != it->second.end() && !it2->second.empty() && it3->second == "1")
+			return it2->second;
+	}
+	return alt;
+}
+
+void AppConfig::update_last_output_dir(const std::string& dir, const bool removable)
+{
+	this->set("", (removable ? "last_output_path_removable" : "last_output_path"), dir);
+}
+
 
 void AppConfig::reset_selections()
 {

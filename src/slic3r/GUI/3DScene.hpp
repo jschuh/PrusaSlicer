@@ -7,10 +7,8 @@
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/Utils.hpp"
 #include "libslic3r/Model.hpp"
-#include "slic3r/GUI/GLCanvas3DManager.hpp"
 
 #include <functional>
-#include <memory>
 
 #ifndef NDEBUG
 #define HAS_GLSAFE
@@ -34,13 +32,8 @@ struct Camera;
 class GLToolbar;
 } // namespace GUI
 
-class Print;
-class PrintObject;
-class SLAPrint;
 class SLAPrintObject;
 enum  SLAPrintObjectStep : unsigned int;
-class Model;
-class ModelObject;
 class DynamicPrintConfig;
 class ExtrusionPath;
 class ExtrusionMultiPath;
@@ -313,33 +306,38 @@ public:
     // Valid geometry_id should always be positive.
     std::pair<size_t, size_t> geometry_id;
     // An ID containing the extruder ID (used to select color).
-    int                 extruder_id;
-    // Is this object selected?
-    bool                selected;
-    // Is this object disabled from selection?
-    bool                disabled;
-    // Is this object printable?
-    bool                printable;
-    // Whether or not this volume is active for rendering
-    bool                is_active;
-    // Whether or not to use this volume when applying zoom_to_volumes()
-    bool                zoom_to_volumes;
-    // Wheter or not this volume is enabled for outside print volume detection in shader.
-    bool                shader_outside_printer_detection_enabled;
-    // Wheter or not this volume is outside print volume.
-    bool                is_outside;
+    int                 	extruder_id;
+
+    // Various boolean flags.
+    struct {
+	    // Is this object selected?
+	    bool                selected : 1;
+	    // Is this object disabled from selection?
+	    bool                disabled : 1;
+	    // Is this object printable?
+	    bool                printable : 1;
+	    // Whether or not this volume is active for rendering
+	    bool                is_active : 1;
+	    // Whether or not to use this volume when applying zoom_to_volumes()
+	    bool                zoom_to_volumes : 1;
+	    // Wheter or not this volume is enabled for outside print volume detection in shader.
+	    bool                shader_outside_printer_detection_enabled : 1;
+	    // Wheter or not this volume is outside print volume.
+	    bool                is_outside : 1;
+	    // Wheter or not this volume has been generated from a modifier
+	    bool                is_modifier : 1;
+	    // Wheter or not this volume has been generated from the wipe tower
+	    bool                is_wipe_tower : 1;
+	    // Wheter or not this volume has been generated from an extrusion path
+	    bool                is_extrusion_path : 1;
+	    // Wheter or not to always render this volume using its own alpha 
+	    bool                force_transparent : 1;
+	    // Whether or not always use the volume's own color (not using SELECTED/HOVER/DISABLED/OUTSIDE)
+	    bool                force_native_color : 1;
+	};
+
     // Is mouse or rectangle selection over this object to select/deselect it ?
-    EHoverState         hover;
-    // Wheter or not this volume has been generated from a modifier
-    bool                is_modifier;
-    // Wheter or not this volume has been generated from the wipe tower
-    bool                is_wipe_tower;
-    // Wheter or not this volume has been generated from an extrusion path
-    bool                is_extrusion_path;
-    // Wheter or not to always render this volume using its own alpha 
-    bool                force_transparent;
-    // Whether or not always use the volume's own color (not using SELECTED/HOVER/DISABLED/OUTSIDE)
-    bool                force_native_color;
+    EHoverState         	hover;
 
     // Interleaved triangles & normals with indexed triangles & quads.
     GLIndexedVertexArray        indexed_vertex_array;
@@ -444,7 +442,9 @@ public:
     void                set_range(double low, double high);
 
     void                render() const;
+#if !ENABLE_SLOPE_RENDERING
     void                render(int color_id, int detection_id, int worldmatrix_id) const;
+#endif // !ENABLE_SLOPE_RENDERING
 
     void                finalize_geometry(bool opengl_initialized) { this->indexed_vertex_array.finalize_geometry(opengl_initialized); }
     void                release_geometry() { this->indexed_vertex_array.release_geometry(); }
@@ -480,20 +480,36 @@ public:
 
 private:
     // min and max vertex of the print box volume
-    float print_box_min[3];
-    float print_box_max[3];
+    float m_print_box_min[3];
+    float m_print_box_max[3];
 
     // z range for clipping in shaders
-    float z_range[2];
+    float m_z_range[2];
 
     // plane coeffs for clipping in shaders
-    float clipping_plane[4];
+    float m_clipping_plane[4];
+
+#if ENABLE_SLOPE_RENDERING
+    struct Slope
+    {
+        // toggle for slope rendering 
+        bool active{ false };
+        // [0] = yellow, [1] = red
+        std::array<float, 2> z_range;
+    };
+
+    Slope m_slope;
+#endif // ENABLE_SLOPE_RENDERING
 
 public:
     GLVolumePtrs volumes;
 
-    GLVolumeCollection() {};
-    ~GLVolumeCollection() { clear(); };
+#if ENABLE_SLOPE_RENDERING
+    GLVolumeCollection() { set_default_slope_z_range(); }
+#else
+    GLVolumeCollection() = default;
+#endif // ENABLE_SLOPE_RENDERING
+    ~GLVolumeCollection() { clear(); }
 
     std::vector<int> load_object(
         const ModelObject 		*model_object,
@@ -544,12 +560,21 @@ public:
     void set_range(double low, double high) { for (GLVolume *vol : this->volumes) vol->set_range(low, high); }
 
     void set_print_box(float min_x, float min_y, float min_z, float max_x, float max_y, float max_z) {
-        print_box_min[0] = min_x; print_box_min[1] = min_y; print_box_min[2] = min_z;
-        print_box_max[0] = max_x; print_box_max[1] = max_y; print_box_max[2] = max_z;
+        m_print_box_min[0] = min_x; m_print_box_min[1] = min_y; m_print_box_min[2] = min_z;
+        m_print_box_max[0] = max_x; m_print_box_max[1] = max_y; m_print_box_max[2] = max_z;
     }
 
-    void set_z_range(float min_z, float max_z) { z_range[0] = min_z; z_range[1] = max_z; }
-    void set_clipping_plane(const double* coeffs) { clipping_plane[0] = coeffs[0]; clipping_plane[1] = coeffs[1]; clipping_plane[2] = coeffs[2]; clipping_plane[3] = coeffs[3]; }
+    void set_z_range(float min_z, float max_z) { m_z_range[0] = min_z; m_z_range[1] = max_z; }
+    void set_clipping_plane(const double* coeffs) { m_clipping_plane[0] = coeffs[0]; m_clipping_plane[1] = coeffs[1]; m_clipping_plane[2] = coeffs[2]; m_clipping_plane[3] = coeffs[3]; }
+
+#if ENABLE_SLOPE_RENDERING
+    bool is_slope_active() const { return m_slope.active; }
+    void set_slope_active(bool active) { m_slope.active = active; }
+
+    const std::array<float, 2>& get_slope_z_range() const { return m_slope.z_range; }
+    void set_slope_z_range(const std::array<float, 2>& range) { m_slope.z_range = range; }
+    void set_default_slope_z_range() { m_slope.z_range = { -::cos(Geometry::deg2rad(90.0f - 45.0f)), -::cos(Geometry::deg2rad(90.0f - 70.0f)) }; }
+#endif // ENABLE_SLOPE_RENDERING
 
     // returns true if all the volumes are completely contained in the print volume
     // returns the containment state in the given out_state, if non-null
@@ -640,22 +665,8 @@ protected:
     bool on_init_from_file(const std::string& filename) override;
 };
 
-class _3DScene
+struct _3DScene
 {
-    static GUI::GLCanvas3DManager s_canvas_mgr;
-
-public:
-    static std::string get_gl_info(bool format_as_html, bool extensions);
-
-    static bool add_canvas(wxGLCanvas* canvas, GUI::Bed3D& bed, GUI::Camera& camera, GUI::GLToolbar& view_toolbar);
-    static bool remove_canvas(wxGLCanvas* canvas);
-    static void remove_all_canvases();
-
-    static bool init(wxGLCanvas* canvas);
-    static void destroy();
-
-    static GUI::GLCanvas3D* get_canvas(wxGLCanvas* canvas);
-
     static void thick_lines_to_verts(const Lines& lines, const std::vector<double>& widths, const std::vector<double>& heights, bool closed, double top_z, GLVolume& volume);
     static void thick_lines_to_verts(const Lines3& lines, const std::vector<double>& widths, const std::vector<double>& heights, bool closed, GLVolume& volume);
 	static void extrusionentity_to_verts(const Polyline &polyline, float width, float height, float print_z, GLVolume& volume);

@@ -24,7 +24,9 @@ typedef Eigen::Matrix<coord_t,  2, 1, Eigen::DontAlign> Vec2crd;
 typedef Eigen::Matrix<coord_t,  3, 1, Eigen::DontAlign> Vec3crd;
 typedef Eigen::Matrix<int,      2, 1, Eigen::DontAlign> Vec2i;
 typedef Eigen::Matrix<int,      3, 1, Eigen::DontAlign> Vec3i;
+typedef Eigen::Matrix<int32_t,  2, 1, Eigen::DontAlign> Vec2i32;
 typedef Eigen::Matrix<int64_t,  2, 1, Eigen::DontAlign> Vec2i64;
+typedef Eigen::Matrix<int32_t,  3, 1, Eigen::DontAlign> Vec3i32;
 typedef Eigen::Matrix<int64_t,  3, 1, Eigen::DontAlign> Vec3i64;
 
 // Vector types with a double coordinate base type.
@@ -53,12 +55,12 @@ typedef Eigen::Transform<double, 3, Eigen::Affine, Eigen::DontAlign> Transform3d
 
 inline bool operator<(const Vec2d &lhs, const Vec2d &rhs) { return lhs(0) < rhs(0) || (lhs(0) == rhs(0) && lhs(1) < rhs(1)); }
 
+inline int32_t cross2(const Vec2i32 &v1, const Vec2i32 &v2) { return v1(0) * v2(1) - v1(1) * v2(0); }
 inline int64_t cross2(const Vec2i64 &v1, const Vec2i64 &v2) { return v1(0) * v2(1) - v1(1) * v2(0); }
-inline coord_t cross2(const Vec2crd &v1, const Vec2crd &v2) { return v1(0) * v2(1) - v1(1) * v2(0); }
 inline float   cross2(const Vec2f   &v1, const Vec2f   &v2) { return v1(0) * v2(1) - v1(1) * v2(0); }
 inline double  cross2(const Vec2d   &v1, const Vec2d   &v2) { return v1(0) * v2(1) - v1(1) * v2(0); }
 
-inline Vec2crd to_2d(const Vec3crd &pt3) { return Vec2crd(pt3(0), pt3(1)); }
+inline Vec2i32 to_2d(const Vec2i32 &pt3) { return Vec2i32(pt3(0), pt3(1)); }
 inline Vec2i64 to_2d(const Vec3i64 &pt3) { return Vec2i64(pt3(0), pt3(1)); }
 inline Vec2f   to_2d(const Vec3f   &pt3) { return Vec2f  (pt3(0), pt3(1)); }
 inline Vec2d   to_2d(const Vec3d   &pt3) { return Vec2d  (pt3(0), pt3(1)); }
@@ -89,8 +91,8 @@ public:
     typedef coord_t coord_type;
 
     Point() : Vec2crd(0, 0) {}
-    Point(coord_t x, coord_t y) : Vec2crd(x, y) {}
-    Point(int64_t x, int64_t y) : Vec2crd(coord_t(x), coord_t(y)) {} // for Clipper
+    Point(int32_t x, int32_t y) : Vec2crd(coord_t(x), coord_t(y)) {}
+    Point(int64_t x, int64_t y) : Vec2crd(coord_t(x), coord_t(y)) {}
     Point(double x, double y) : Vec2crd(coord_t(lrint(x)), coord_t(lrint(y))) {}
     Point(const Point &rhs) { *this = rhs; }
 	explicit Point(const Vec2d& rhs) : Vec2crd(coord_t(lrint(rhs.x())), coord_t(lrint(rhs.y()))) {}
@@ -112,6 +114,7 @@ public:
     Point& operator+=(const Point& rhs) { (*this)(0) += rhs(0); (*this)(1) += rhs(1); return *this; }
     Point& operator-=(const Point& rhs) { (*this)(0) -= rhs(0); (*this)(1) -= rhs(1); return *this; }
 	Point& operator*=(const double &rhs) { (*this)(0) = coord_t((*this)(0) * rhs); (*this)(1) = coord_t((*this)(1) * rhs); return *this; }
+    Point operator*(const double &rhs) { return Point((*this)(0) * rhs, (*this)(1) * rhs); }
 
     void   rotate(double angle);
     void   rotate(double angle, const Point &center);
@@ -285,6 +288,72 @@ private:
 };
 
 std::ostream& operator<<(std::ostream &stm, const Vec2d &pointf);
+
+
+// /////////////////////////////////////////////////////////////////////////////
+// Type safe conversions to and from scaled and unscaled coordinates
+// /////////////////////////////////////////////////////////////////////////////
+
+// Semantics are the following:
+// Upscaling (scaled()): only from floating point types (or Vec) to either
+//                       floating point or integer 'scaled coord' coordinates.
+// Downscaling (unscaled()): from arithmetic (or Vec) to floating point only
+
+// Conversion definition from unscaled to floating point scaled
+template<class Tout,
+         class Tin,
+         class = FloatingOnly<Tin>>
+inline constexpr FloatingOnly<Tout> scaled(const Tin &v) noexcept
+{
+    return Tout(v / Tin(SCALING_FACTOR));
+}
+
+// Conversion definition from unscaled to integer 'scaled coord'.
+// TODO: is the rounding necessary? Here it is commented  out to show that
+// it can be different for integers but it does not have to be. Using
+// std::round means loosing noexcept and constexpr modifiers
+template<class Tout = coord_t, class Tin, class = FloatingOnly<Tin>>
+inline constexpr ScaledCoordOnly<Tout> scaled(const Tin &v) noexcept
+{
+    //return static_cast<Tout>(std::round(v / SCALING_FACTOR));
+    return Tout(v / Tin(SCALING_FACTOR));
+}
+
+// Conversion for Eigen vectors (N dimensional points)
+template<class Tout = coord_t,
+         class Tin,
+         int N,
+         class = FloatingOnly<Tin>,
+         int...EigenArgs>
+inline Eigen::Matrix<ArithmeticOnly<Tout>, N, EigenArgs...>
+scaled(const Eigen::Matrix<Tin, N, EigenArgs...> &v)
+{
+    return (v / SCALING_FACTOR).template cast<Tout>();
+}
+
+// Conversion from arithmetic scaled type to floating point unscaled
+template<class Tout = double,
+         class Tin,
+         class = ArithmeticOnly<Tin>,
+         class = FloatingOnly<Tout>>
+inline constexpr Tout unscaled(const Tin &v) noexcept
+{
+    return Tout(v * Tout(SCALING_FACTOR));
+}
+
+// Unscaling for Eigen vectors. Input base type can be arithmetic, output base
+// type can only be floating point.
+template<class Tout = double,
+         class Tin,
+         int N,
+         class = ArithmeticOnly<Tin>,
+         class = FloatingOnly<Tout>,
+         int...EigenArgs>
+inline constexpr Eigen::Matrix<Tout, N, EigenArgs...>
+unscaled(const Eigen::Matrix<Tin, N, EigenArgs...> &v) noexcept
+{
+    return v.template cast<Tout>() * SCALING_FACTOR;
+}
 
 } // namespace Slic3r
 

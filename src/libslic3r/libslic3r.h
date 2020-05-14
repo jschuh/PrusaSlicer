@@ -17,11 +17,19 @@
 #include <vector>
 #include <cassert>
 #include <cmath>
+#include <type_traits>
 
 #include "Technologies.hpp"
 #include "Semver.hpp"
 
+#if 1
+// Saves around 32% RAM after slicing step, 6.7% after G-code export (tested on PrusaSlicer 2.2.0 final).
 typedef int32_t coord_t;
+#else
+//FIXME At least FillRectilinear2 requires coord_t to be 32bit.
+typedef int64_t coord_t;
+#endif
+
 typedef double  coordf_t;
 
 //FIXME This epsilon value is used for many non-related purposes:
@@ -33,6 +41,7 @@ typedef double  coordf_t;
 // This scaling generates a following fixed point representation with for a 32bit integer:
 // 0..4294mm with 1nm resolution
 // int32_t fits an interval of (-2147.48mm, +2147.48mm)
+// with int64_t we don't have to worry anymore about the size of the int.
 #define SCALING_FACTOR 0.000001
 // RESOLUTION, SCALED_RESOLUTION: Used as an error threshold for a Douglas-Peucker polyline simplification algorithm.
 #define RESOLUTION 0.0125
@@ -98,7 +107,17 @@ extern Semver SEMVER;
 template<typename T, typename Q>
 inline T unscale(Q v) { return T(v) * T(SCALING_FACTOR); }
 
-enum Axis { X=0, Y, Z, E, F, NUM_AXES };
+enum Axis { 
+	X=0,
+	Y,
+	Z,
+	E,
+	F,
+	NUM_AXES,
+	// For the GCodeReader to mark a parsed axis, which is not in "XYZEF", it was parsed correctly.
+	UNKNOWN_AXIS = NUM_AXES,
+	NUM_AXES_WITH_UNKNOWN,
+};
 
 template <class T>
 inline void append_to(std::vector<T> &dst, const std::vector<T> &src)
@@ -158,6 +177,53 @@ inline std::unique_ptr<T> make_unique(Args&&... args) {
     return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
 }
 
+// Variant of std::lower_bound() with compare predicate, but without the key.
+// This variant is very useful in case that the T type is large or it does not even have a public constructor.
+template<class ForwardIt, class LowerThanKeyPredicate>
+ForwardIt lower_bound_by_predicate(ForwardIt first, ForwardIt last, LowerThanKeyPredicate lower_thank_key)
+{
+    ForwardIt it;
+    typename std::iterator_traits<ForwardIt>::difference_type count, step;
+    count = std::distance(first, last);
+ 
+    while (count > 0) {
+        it = first;
+        step = count / 2;
+        std::advance(it, step);
+        if (lower_thank_key(*it)) {
+            first = ++it;
+            count -= step + 1;
+        }
+        else
+            count = step;
+    }
+    return first;
+}
+
+// from https://en.cppreference.com/w/cpp/algorithm/lower_bound
+template<class ForwardIt, class T, class Compare=std::less<>>
+ForwardIt binary_find(ForwardIt first, ForwardIt last, const T& value, Compare comp={})
+{
+    // Note: BOTH type T and the type after ForwardIt is dereferenced 
+    // must be implicitly convertible to BOTH Type1 and Type2, used in Compare. 
+    // This is stricter than lower_bound requirement (see above)
+ 
+    first = std::lower_bound(first, last, value, comp);
+    return first != last && !comp(value, *first) ? first : last;
+}
+
+// from https://en.cppreference.com/w/cpp/algorithm/lower_bound
+template<class ForwardIt, class LowerThanKeyPredicate, class EqualToKeyPredicate>
+ForwardIt binary_find_by_predicate(ForwardIt first, ForwardIt last, LowerThanKeyPredicate lower_thank_key, EqualToKeyPredicate equal_to_key)
+{
+    // Note: BOTH type T and the type after ForwardIt is dereferenced 
+    // must be implicitly convertible to BOTH Type1 and Type2, used in Compare. 
+    // This is stricter than lower_bound requirement (see above)
+ 
+    first = lower_bound_by_predicate(first, last, lower_thank_key);
+    return first != last && equal_to_key(*first) ? first : last;
+}
+
 template<typename T>
 static inline T sqr(T x)
 {
@@ -182,6 +248,37 @@ static inline bool is_approx(Number value, Number test_value)
 {
     return std::fabs(double(value) - double(test_value)) < double(EPSILON);
 }
+
+// A meta-predicate which is true for integers wider than or equal to coord_t
+template<class I> struct is_scaled_coord
+{
+    static const constexpr bool value =
+        std::is_integral<I>::value &&
+        std::numeric_limits<I>::digits >=
+            std::numeric_limits<coord_t>::digits;
+};
+
+// Meta predicates for floating, 'scaled coord' and generic arithmetic types
+// Can be used to restrict templates to work for only the specified set of types.
+// parameter T is the type we want to restrict
+// parameter O (Optional defaults to T) is the type that the whole expression
+// will be evaluated to.
+// e.g. template<class T> FloatingOnly<T, bool> is_nan(T val);
+// The whole template will be defined only for floating point types and the
+// return type will be bool.
+// For more info how to use, see docs for std::enable_if
+//
+template<class T, class O = T> 
+using FloatingOnly = std::enable_if_t<std::is_floating_point<T>::value, O>;
+
+template<class T, class O = T>
+using ScaledCoordOnly = std::enable_if_t<is_scaled_coord<T>::value, O>;
+
+template<class T, class O = T>
+using IntegerOnly = std::enable_if_t<std::is_integral<T>::value, O>;
+
+template<class T, class O = T>
+using ArithmeticOnly = std::enable_if_t<std::is_arithmetic<T>::value, O>;
 
 } // namespace Slic3r
 

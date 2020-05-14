@@ -1,4 +1,5 @@
 #include "Config.hpp"
+#include "format.hpp"
 #include "Utils.hpp"
 #include <assert.h>
 #include <fstream>
@@ -464,7 +465,7 @@ bool ConfigBase::set_deserialize_nothrow(const t_config_option_key &opt_key_src,
 void ConfigBase::set_deserialize(const t_config_option_key &opt_key_src, const std::string &value_src, bool append)
 {
 	if (! this->set_deserialize_nothrow(opt_key_src, value_src, append))
-		throw BadOptionTypeException("ConfigBase::set_deserialize() failed");
+		throw BadOptionTypeException(format("ConfigBase::set_deserialize() failed for parameter \"%1%\", value \"%2%\"", opt_key_src,  value_src));
 }
 
 void ConfigBase::set_deserialize(std::initializer_list<SetDeserializeItem> items)
@@ -612,7 +613,7 @@ void ConfigBase::load_from_gcode_file(const std::string &file)
 	}
     ifs.seekg(0, ifs.end);
 	auto file_length = ifs.tellg();
-	auto data_length = std::min<std::fstream::streampos>(65535, file_length);
+	auto data_length = std::min<std::fstream::pos_type>(65535, file_length);
 	ifs.seekg(file_length - data_length, ifs.beg);
     std::vector<char> data(size_t(data_length) + 1, 0);
     ifs.read(data.data(), data_length);
@@ -620,7 +621,7 @@ void ConfigBase::load_from_gcode_file(const std::string &file)
 
     size_t key_value_pairs = load_from_gcode_string(data.data());
     if (key_value_pairs < 80)
-        throw std::runtime_error((boost::format("Suspiciously low number of configuration values extracted from %1%: %2%") % file % key_value_pairs).str());
+        throw std::runtime_error(format("Suspiciously low number of configuration values extracted from %1%: %2%", file, key_value_pairs));
 }
 
 // Load the config keys from the given string.
@@ -630,39 +631,38 @@ size_t ConfigBase::load_from_gcode_string(const char* str)
         return 0;
 
     // Walk line by line in reverse until a non-configuration key appears.
-    char *data_start = const_cast<char*>(str);
+    const char *data_start = str;
     // boost::nowide::ifstream seems to cook the text data somehow, so less then the 64k of characters may be retrieved.
-    char *end = data_start + strlen(str);
+    const char *end = data_start + strlen(str);
     size_t num_key_value_pairs = 0;
     for (;;) {
         // Extract next line.
         for (--end; end > data_start && (*end == '\r' || *end == '\n'); --end);
         if (end == data_start)
             break;
-        char *start = end;
-        *(++end) = 0;
+        const char *start = end ++;
         for (; start > data_start && *start != '\r' && *start != '\n'; --start);
         if (start == data_start)
             break;
         // Extracted a line from start to end. Extract the key = value pair.
-        if (end - (++start) < 10 || start[0] != ';' || start[1] != ' ')
+        if (end - (++ start) < 10 || start[0] != ';' || start[1] != ' ')
             break;
-        char *key = start + 2;
+        const char *key = start + 2;
         if (!(*key >= 'a' && *key <= 'z') || (*key >= 'A' && *key <= 'Z'))
             // A key must start with a letter.
             break;
-        char *sep = strchr(key, '=');
-        if (sep == nullptr || sep[-1] != ' ' || sep[1] != ' ')
+        const char *sep = key;
+        for (; sep != end && *sep != '='; ++ sep) ;
+        if (sep == end || sep[-1] != ' ' || sep[1] != ' ')
             break;
-        char *value = sep + 2;
+        const char *value = sep + 2;
         if (value > end)
             break;
-        char *key_end = sep - 1;
+        const char *key_end = sep - 1;
         if (key_end - key < 3)
             break;
-        *key_end = 0;
         // The key may contain letters, digits and underscores.
-        for (char *c = key; c != key_end; ++c)
+        for (const char *c = key; c != key_end; ++ c)
             if (!((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '_')) {
                 key = nullptr;
                 break;
@@ -670,7 +670,7 @@ size_t ConfigBase::load_from_gcode_string(const char* str)
         if (key == nullptr)
             break;
         try {
-            this->set_deserialize(key, value);
+            this->set_deserialize(std::string(key, key_end), std::string(value, end));
             ++num_key_value_pairs;
         }
         catch (UnknownOptionException & /* e */) {
@@ -758,17 +758,23 @@ ConfigOption* DynamicConfig::optptr(const t_config_option_key &opt_key, bool cre
     return opt;
 }
 
-void DynamicConfig::read_cli(const std::vector<std::string> &tokens, t_config_option_keys* extra, t_config_option_keys* keys)
+const ConfigOption* DynamicConfig::optptr(const t_config_option_key &opt_key) const
 {
-    std::vector<char*> args;    
-    // push a bogus executable name (argv[0])
-    args.emplace_back(const_cast<char*>(""));
-    for (size_t i = 0; i < tokens.size(); ++ i)
-        args.emplace_back(const_cast<char *>(tokens[i].c_str()));
-    this->read_cli(int(args.size()), &args[0], extra, keys);
+    auto it = options.find(opt_key);
+    return (it == options.end()) ? nullptr : it->second.get();
 }
 
-bool DynamicConfig::read_cli(int argc, char** argv, t_config_option_keys* extra, t_config_option_keys* keys)
+void DynamicConfig::read_cli(const std::vector<std::string> &tokens, t_config_option_keys* extra, t_config_option_keys* keys)
+{
+    std::vector<const char*> args;    
+    // push a bogus executable name (argv[0])
+    args.emplace_back("");
+    for (size_t i = 0; i < tokens.size(); ++ i)
+        args.emplace_back(tokens[i].c_str());
+    this->read_cli(int(args.size()), args.data(), extra, keys);
+}
+
+bool DynamicConfig::read_cli(int argc, const char* const argv[], t_config_option_keys* extra, t_config_option_keys* keys)
 {
     // cache the CLI option => opt_key mapping
     std::map<std::string,std::string> opts;

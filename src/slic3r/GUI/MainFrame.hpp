@@ -43,6 +43,23 @@ struct PresetTab {
     PrinterTechnology technology;
 };
 
+// ----------------------------------------------------------------------------
+// SettingsDialog
+// ----------------------------------------------------------------------------
+
+class SettingsDialog : public DPIDialog
+{
+    wxNotebook* m_tabpanel { nullptr };
+    MainFrame*  m_main_frame {nullptr };
+public:
+    SettingsDialog(MainFrame* mainframe);
+    ~SettingsDialog() {}
+    wxNotebook* get_tabpanel() { return m_tabpanel; }
+
+protected:
+    void on_dpi_changed(const wxRect& suggested_rect) override;
+};
+
 class MainFrame : public DPIFrame
 {
     bool        m_loaded {false};
@@ -57,6 +74,8 @@ class MainFrame : public DPIFrame
 
     PrintHostQueueDialog *m_printhost_queue_dlg;
 
+    size_t      m_last_selected_tab;
+
     std::string     get_base_name(const wxString &full_name, const char *extension = nullptr) const;
     std::string     get_dir_name(const wxString &full_name) const;
 
@@ -70,6 +89,8 @@ class MainFrame : public DPIFrame
     bool can_export_supports() const;
     bool can_export_gcode() const;
     bool can_send_gcode() const;
+	bool can_export_gcode_sd() const;
+	bool can_eject() const;
     bool can_slice() const;
     bool can_change_view() const;
     bool can_select() const;
@@ -84,6 +105,7 @@ class MainFrame : public DPIFrame
         miExport = 0,   // Export G-code        Export
         miSend,         // Send G-code          Send to print
         miMaterialTab,  // Filament Settings    Material Settings
+        miPrinterTab,   // Different bitmap for Printer Settings
     };
 
     // vector of a MenuBar items changeable in respect to printer technology 
@@ -91,12 +113,21 @@ class MainFrame : public DPIFrame
 
     wxFileHistory m_recent_projects;
 
+    enum SettingsLayout {
+        slOld = 0,
+        slNew,
+        slDlg,
+    }               m_layout;
+
 protected:
     virtual void on_dpi_changed(const wxRect &suggested_rect);
 
 public:
     MainFrame();
-    ~MainFrame();
+    ~MainFrame() = default;
+
+	// Called when closing the application and when switching the application language.
+	void 		shutdown();
 
     Plater*     plater() { return m_plater; }
 
@@ -123,9 +154,11 @@ public:
     void        export_configbundle();
     void        load_configbundle(wxString file = wxEmptyString);
     void        load_config(const DynamicPrintConfig& config);
-    void        select_tab(size_t tab) const;
+    // Select tab in m_tabpanel
+    // When tab == -1, will be selected last selected tab
+    void        select_tab(size_t tab = size_t(-1));
     void        select_view(const std::string& direction);
-    // Propagate changed configuration from the Tab to the Platter and save changes to the AppConfig
+    // Propagate changed configuration from the Tab to the Plater and save changes to the AppConfig
     void        on_config_changed(DynamicPrintConfig* cfg) const ;
 
     void        add_to_recent_projects(const wxString& filename);
@@ -134,8 +167,15 @@ public:
 
     Plater*             m_plater { nullptr };
     wxNotebook*         m_tabpanel { nullptr };
+    SettingsDialog*     m_settings_dialog { nullptr };
     wxProgressDialog*   m_progress_dialog { nullptr };
-    std::unique_ptr<ProgressStatusBar>  m_statusbar;
+    std::shared_ptr<ProgressStatusBar>  m_statusbar;
+
+#ifdef _WIN32
+    void*				m_hDeviceNotify { nullptr };
+    uint32_t  			m_ulSHChangeNotifyRegister { 0 };
+	static constexpr int WM_USER_MEDIACHANGED { 0x7FFF }; // WM_USER from 0x0400 to 0x7FFF, picking the last one to not interfere with wxWidgets allocation
+#endif // _WIN32
 };
 
 } // GUI

@@ -4,6 +4,7 @@
 #include "libslic3r.h"
 #include "PrintConfig.hpp"
 #include "GCodeReader.hpp"
+#include "CustomGCode.hpp"
 
 #define ENABLE_MOVE_STATS 0
 
@@ -23,6 +24,7 @@ namespace Slic3r {
         static const std::string Silent_Last_M73_Output_Placeholder_Tag;
 
         static const std::string Color_Change_Tag;
+        static const std::string Pause_Print_Tag;
 
         enum EMode : unsigned char
         {
@@ -83,7 +85,6 @@ namespace Slic3r {
             // hard limit for the acceleration, to which the firmware will clamp.
             float max_acceleration;             // mm/s^2
             float retract_acceleration;         // mm/s^2
-            float additional_time;              // s
             float minimum_feedrate;             // mm/s
             float minimum_travel_feedrate;      // mm/s
             float extrude_factor_override_percentage;
@@ -123,14 +124,13 @@ namespace Slic3r {
 
             struct Trapezoid
             {
-                float distance;         // mm
                 float accelerate_until; // mm
                 float decelerate_after; // mm
-                FeedrateProfile feedrate;
+                float cruise_feedrate; // mm/sec
 
-                float acceleration_time(float acceleration) const;
+                float acceleration_time(float entry_feedrate, float acceleration) const;
                 float cruise_time() const;
-                float deceleration_time(float acceleration) const;
+                float deceleration_time(float distance, float acceleration) const;
                 float cruise_distance() const;
 
                 // This function gives the time needed to accelerate from an initial speed to reach a final distance.
@@ -151,25 +151,16 @@ namespace Slic3r {
 #endif // ENABLE_MOVE_STATS
             Flags flags;
 
-            float delta_pos[Num_Axis]; // mm
+            float distance; // mm
             float acceleration;        // mm/s^2
             float max_entry_speed;     // mm/s
             float safe_feedrate;       // mm/s
 
             FeedrateProfile feedrate;
             Trapezoid trapezoid;
-            float elapsed_time;
 
-            Block();
-
-            // Returns the length of the move covered by this block, in mm
-            float move_length() const;
-
-            // Returns true if this block is a retract/unretract move only
-            float is_extruder_only_move() const;
-
-            // Returns true if this block is a move with no extrusion
-            float is_travel_move() const;
+            // Ordnary index of this G1 line in the file.
+            int   g1_line_id { -1 };
 
             // Returns the time spent accelerating toward cruise speed, in seconds
             float acceleration_time() const;
@@ -215,16 +206,13 @@ namespace Slic3r {
 #endif // ENABLE_MOVE_STATS
 
     public:
-        typedef std::pair<unsigned int, unsigned int> G1LineIdToBlockId;
-        typedef std::vector<G1LineIdToBlockId> G1LineIdToBlockIdMap;
+        typedef std::pair<int, float> G1LineIdTime;
+        typedef std::vector<G1LineIdTime> G1LineIdsTimes;
 
         struct PostProcessData
         {
-            const G1LineIdToBlockIdMap& g1_line_ids;
-            const BlocksList& blocks;
+            const G1LineIdsTimes& g1_times;
             float time;
-
-            PostProcessData(const G1LineIdToBlockIdMap& g1_line_ids, const BlocksList& blocks, float time) : g1_line_ids(g1_line_ids), blocks(blocks), time(time) {}
         };
 
     private:
@@ -234,16 +222,20 @@ namespace Slic3r {
         Feedrates m_curr;
         Feedrates m_prev;
         BlocksList m_blocks;
-        // Map between g1 line id and blocks id, used to speed up export of remaining times
-        G1LineIdToBlockIdMap m_g1_line_ids;
-        // Index of the last block already st_synchronized
-        int m_last_st_synchronized_block_id;
+        // Size of the firmware planner queue. The old 8-bit Marlins usually just managed 16 trapezoidal blocks.
+        // Let's be conservative and plan for newer boards with more memory.
+        static constexpr size_t planner_queue_size = 64;
+        // The firmware recalculates last planner_queue_size trapezoidal blocks each time a new block is added.
+        // We are not simulating the firmware exactly, we calculate a sequence of blocks once a reasonable number of blocks accumulate.
+        static constexpr size_t planner_refresh_if_larger = planner_queue_size * 4;
+        // Map from g1 line id to its elapsed time from the start of the print.
+        G1LineIdsTimes m_g1_times;
         float m_time; // s
 
-        // data to calculate color print times
-        bool m_needs_color_times;
-        std::vector<float> m_color_times;
-        float m_color_time_cache;
+        // data to calculate custom code times
+        bool m_needs_custom_gcode_times;
+        std::vector<std::pair<CustomGcodeType, float>> m_custom_gcode_times;
+        float m_custom_gcode_time_cache;
 
 #if ENABLE_MOVE_STATS
         MovesStatsMap _moves_stats;
@@ -265,13 +257,13 @@ namespace Slic3r {
         void calculate_time(bool start_from_beginning);
 
         // Calculates the time estimate from the given gcode in string format
-        void calculate_time_from_text(const std::string& gcode);
+        //void calculate_time_from_text(const std::string& gcode);
 
         // Calculates the time estimate from the gcode contained in the file with the given filename
-        void calculate_time_from_file(const std::string& file);
+        //void calculate_time_from_file(const std::string& file);
 
         // Calculates the time estimate from the gcode contained in given list of gcode lines
-        void calculate_time_from_lines(const std::vector<std::string>& gcode_lines);
+        //void calculate_time_from_lines(const std::vector<std::string>& gcode_lines);
 
         // Process the gcode contained in the file with the given filename, 
         // replacing placeholders with correspondent new lines M73
@@ -348,10 +340,6 @@ namespace Slic3r {
         unsigned int get_extruder_id() const;
         void reset_extruder_id();
 
-        void add_additional_time(float timeSec);
-        void set_additional_time(float timeSec);
-        float get_additional_time() const;
-
         void set_default();
 
         // Call this method before to start adding lines using add_gcode_line() when reusing an instance of GCodeTimeEstimator
@@ -363,11 +351,14 @@ namespace Slic3r {
         // Returns the estimated time, in format DDd HHh MMm SSs
         std::string get_time_dhms() const;
 
+        // Returns the estimated time, in format DDd HHh MMm
+        std::string get_time_dhm() const;
+
         // Returns the estimated time, in minutes (integer)
         std::string get_time_minutes() const;
 
-        // Returns the estimated time, in seconds, for each color
-        std::vector<float> get_color_times() const;
+        // Returns the estimated time, in seconds, for each custom gcode
+        std::vector<std::pair<CustomGcodeType, float>> get_custom_gcode_times() const;
 
         // Returns the estimated time, in format DDd HHh MMm SSs, for each color
         // If include_remaining==true the strings will be formatted as: "time for color (remaining time at color start)"
@@ -377,10 +368,14 @@ namespace Slic3r {
         // If include_remaining==true the strings will be formatted as: "time for color (remaining time at color start)"
         std::vector<std::string> get_color_times_minutes(bool include_remaining) const;
 
+        // Returns the estimated time, in format DDd HHh MMm, for each custom_gcode
+        // If include_remaining==true the strings will be formatted as: "time for custom_gcode (remaining time at color start)"
+        std::vector<std::pair<CustomGcodeType, std::string>> get_custom_gcode_times_dhm(bool include_remaining) const;
+
         // Return an estimate of the memory consumed by the time estimator.
         size_t memory_used() const;
 
-        PostProcessData get_post_process_data() const { return PostProcessData(m_g1_line_ids, m_blocks, m_time); }
+        PostProcessData get_post_process_data() const { return PostProcessData{ m_g1_times, m_time }; }
 
     private:
         void _reset();
@@ -388,7 +383,7 @@ namespace Slic3r {
         void _reset_blocks();
 
         // Calculates the time estimate
-        void _calculate_time();
+        void _calculate_time(size_t keep_last_n_blocks);
 
         // Processes the given gcode line
         void _process_gcode_line(GCodeReader&, const GCodeReader::GCodeLine& line);
@@ -457,11 +452,11 @@ namespace Slic3r {
         // Returns true if any tag has been processed
         bool _process_tags(const GCodeReader::GCodeLine& line);
 
-        // Processes color change tag
-        void _process_color_change_tag();
+        // Processes ColorChangeTag and PausePrintTag
+        void _process_custom_gcode_tag(CustomGcodeType code);
 
         // Simulates firmware st_synchronize() call
-        void _simulate_st_synchronize();
+        void _simulate_st_synchronize(float additional_time);
 
         void _forward_pass();
         void _reverse_pass();
@@ -473,6 +468,8 @@ namespace Slic3r {
 
         // Returns the given time is seconds in format DDd HHh MMm SSs
         static std::string _get_time_dhms(float time_in_secs);
+        // Returns the given time is minutes in format DDd HHh MMm
+        static std::string _get_time_dhm(float time_in_secs);
 
         // Returns the given, in minutes (integer)
         static std::string _get_time_minutes(float time_in_secs);
