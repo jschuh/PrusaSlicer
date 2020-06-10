@@ -1407,9 +1407,16 @@ void PrintObject::bridge_over_infill()
                     
                     // iterate through regions and collect internal surfaces
                     Polygons lower_internal;
-                    for (LayerRegion *lower_layerm : lower_layer->m_regions)
-                        lower_layerm->fill_surfaces.filter_by_type(stInternal, &lower_internal);
-                    
+                    for (LayerRegion* lower_layerm : lower_layer->m_regions) {
+                        auto surfaces = lower_layerm->fill_surfaces.surfaces;
+                        for (Surfaces::iterator surface = surfaces.begin(); surface != surfaces.end(); ++surface) {
+                            if (surface->surface_type == stInternal && layerm->region()->needs_bridge_over_infill()) {
+                                Polygons pp = surface->expolygon;
+                                lower_internal.insert(lower_internal.end(), pp.begin(), pp.end());
+                            }
+                        }
+                    }
+
                     // intersect such lower internal surfaces with the candidate solid surfaces
                     to_bridge_pp = intersection(to_bridge_pp, lower_internal);
                 }
@@ -2359,7 +2366,7 @@ void PrintObject::discover_horizontal_shells()
             if (region_config.solid_infill_every_layers.value > 0 && region_config.fill_density.value > 0 &&
                 (i % region_config.solid_infill_every_layers) == 0) {
                 // Insert a solid internal layer. Mark stInternal surfaces as stInternalSolid or stInternalBridge.
-                SurfaceType type = (region_config.fill_density == 100) ? stInternalSolid : stInternalBridge;
+                SurfaceType type = layerm->region()->needs_bridge_over_infill() ? stInternalBridge : stInternalSolid;
                 for (Surface &surface : layerm->fill_surfaces.surfaces)
                     if (surface.surface_type == stInternal)
                         surface.surface_type = type;

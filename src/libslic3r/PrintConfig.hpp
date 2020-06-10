@@ -490,6 +490,7 @@ public:
     ConfigOptionFloat               bottom_solid_min_thickness;
     ConfigOptionFloat               bridge_flow_ratio;
     ConfigOptionFloat               bridge_speed;
+    ConfigOptionFloat               bridge_infill_threshold;
     ConfigOptionBool                ensure_vertical_shell_thickness;
     ConfigOptionEnum<InfillPattern> top_fill_pattern;
     ConfigOptionEnum<InfillPattern> bottom_fill_pattern;
@@ -540,6 +541,7 @@ protected:
         OPT_PTR(bottom_solid_layers);
         OPT_PTR(bottom_solid_min_thickness);
         OPT_PTR(bridge_flow_ratio);
+        OPT_PTR(bridge_infill_threshold);
         OPT_PTR(bridge_speed);
         OPT_PTR(ensure_vertical_shell_thickness);
         OPT_PTR(top_fill_pattern);

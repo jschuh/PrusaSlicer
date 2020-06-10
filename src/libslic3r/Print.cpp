@@ -74,6 +74,7 @@ bool Print::invalidate_state_by_config_options(const std::vector<t_config_option
         "before_layer_gcode",
         "between_objects_gcode",
         "bridge_acceleration",
+        "bridge_infill_threshold",
         "bridge_fan_speed",
         "colorprint_heights",
         "cooling",

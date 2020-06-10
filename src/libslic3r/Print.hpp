@@ -61,6 +61,8 @@ public:
     coordf_t                    nozzle_dmr_avg(const PrintConfig &print_config) const;
     // Average diameter of nozzles participating on extruding this region.
     coordf_t                    bridging_height_avg(const PrintConfig &print_config) const;
+    // True if infill voids (computed from infill_density) are larger than bridge_infill_threshold.
+    bool                        needs_bridge_over_infill() const;
 
     // Collect 0-based extruder indices used to print this region's object.
 	void                        collect_object_printing_extruders(std::vector<unsigned int> &object_extruders) const;

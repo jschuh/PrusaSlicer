@@ -65,6 +65,17 @@ coordf_t PrintRegion::bridging_height_avg(const PrintConfig &print_config) const
     return this->nozzle_dmr_avg(print_config) * sqrt(m_config.bridge_flow_ratio.value);
 }
 
+bool PrintRegion::needs_bridge_over_infill() const
+{
+    if (config().fill_density <= 0)
+        return false;
+    const double infill_extrusion_width = Flow::new_from_config_width(frInfill, m_config.infill_extrusion_width,
+        m_print->config().nozzle_diameter.get_at(extruder(frInfill) - 1), 0.2f, 0.f).width;
+    // Compute the unsupported area assuming a grid, which is pragmatically good enough for all infill types.
+    const double bridging_area = pow<double>(2.0 * 100.0 * infill_extrusion_width / config().fill_density - infill_extrusion_width, 2);
+    return bridging_area > config().bridge_infill_threshold;
+}
+
 void PrintRegion::collect_object_printing_extruders(const PrintConfig &print_config, const PrintRegionConfig &region_config, std::vector<unsigned int> &object_extruders)
 {
     // These checks reflect the same logic used in the GUI for enabling/disabling extruder selection fields.
