@@ -1410,7 +1410,7 @@ void PrintObject::bridge_over_infill()
                     for (LayerRegion* lower_layerm : lower_layer->m_regions) {
                         auto surfaces = lower_layerm->fill_surfaces.surfaces;
                         for (Surfaces::iterator surface = surfaces.begin(); surface != surfaces.end(); ++surface) {
-                            if (surface->surface_type == stInternal && layerm->region()->needs_bridge_over_infill()) {
+                            if (surface->surface_type == stInternal && layerm->needs_bridge_over_infill()) {
                                 Polygons pp = surface->expolygon;
                                 lower_internal.insert(lower_internal.end(), pp.begin(), pp.end());
                             }

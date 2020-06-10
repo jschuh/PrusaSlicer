@@ -57,6 +57,8 @@ public:
     void    make_perimeters(const SurfaceCollection &slices, SurfaceCollection* fill_surfaces);
     void    process_external_surfaces(const Layer *lower_layer, const Polygons *lower_layer_covered);
     double  infill_area_threshold() const;
+    // True if infill voids (computed from infill_density) are larger than bridge_infill_threshold.
+    bool    needs_bridge_over_infill() const;
     // Trim surfaces by trimming polygons. Used by the elephant foot compensation at the 1st layer.
     void    trim_surfaces(const Polygons &trimming_polygons);
     // Single elephant foot compensation step, used by the elephant foor compensation at the 1st layer.

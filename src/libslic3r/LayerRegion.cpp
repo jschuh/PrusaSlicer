@@ -397,6 +397,17 @@ double LayerRegion::infill_area_threshold() const
     return ss*ss;
 }
 
+bool LayerRegion::needs_bridge_over_infill() const
+{
+    auto region_config = region()->config();
+    if (region_config.fill_density <= 0)
+        return true;
+    const double infill_extrusion_width = flow(frInfill).width;
+    // Compute the unsupported area assuming a grid, which is pragmatically good enough for all infill types.
+    const double bridging_area = pow<double>(2.0 * 100.0 * infill_extrusion_width / region_config.fill_density - infill_extrusion_width, 2);
+    return bridging_area > region_config.bridge_infill_threshold;
+}
+
 void LayerRegion::trim_surfaces(const Polygons &trimming_polygons)
 {
 #ifndef NDEBUG
