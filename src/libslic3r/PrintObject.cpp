@@ -2366,7 +2366,7 @@ void PrintObject::discover_horizontal_shells()
             if (region_config.solid_infill_every_layers.value > 0 && region_config.fill_density.value > 0 &&
                 (i % region_config.solid_infill_every_layers) == 0) {
                 // Insert a solid internal layer. Mark stInternal surfaces as stInternalSolid or stInternalBridge.
-                SurfaceType type = layerm->region()->needs_bridge_over_infill() ? stInternalBridge : stInternalSolid;
+                SurfaceType type = (region_config.fill_density == 100) ? stInternalSolid : stInternalBridge;
                 for (Surface &surface : layerm->fill_surfaces.surfaces)
                     if (surface.surface_type == stInternal)
                         surface.surface_type = type;
