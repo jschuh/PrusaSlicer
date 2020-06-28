@@ -1701,6 +1701,7 @@ void TabFilament::build()
         line.append_option(optgroup->get_option("max_fan_speed"));
         optgroup->append_line(line);
 
+        optgroup->append_single_option_line("external_perimeter_fan_speed");
         optgroup->append_single_option_line("bridge_fan_speed");
         optgroup->append_single_option_line("disable_fan_first_layers");
 

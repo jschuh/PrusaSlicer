@@ -800,6 +800,7 @@ public:
     ConfigOptionFloat               default_acceleration;
     ConfigOptionInts                disable_fan_first_layers;
     ConfigOptionFloat               duplicate_distance;
+    ConfigOptionInts                external_perimeter_fan_speed;
     ConfigOptionFloat               extruder_clearance_height;
     ConfigOptionFloat               extruder_clearance_radius;
     ConfigOptionStrings             extruder_colour;
@@ -873,6 +874,7 @@ protected:
         OPT_PTR(default_acceleration);
         OPT_PTR(disable_fan_first_layers);
         OPT_PTR(duplicate_distance);
+        OPT_PTR(external_perimeter_fan_speed);
         OPT_PTR(extruder_clearance_height);
         OPT_PTR(extruder_clearance_radius);
         OPT_PTR(extruder_colour);
