@@ -3,8 +3,7 @@
 
 #include <memory>
 #include <string>
-#include "libslic3r/PrintConfig.hpp"
-#include "MainFrame.hpp"
+#include "Preset.hpp"
 #include "ImGuiWrapper.hpp"
 #include "ConfigWizard.hpp"
 #include "OpenGLManager.hpp"
@@ -13,6 +12,7 @@
 #include <wx/colour.h>
 #include <wx/font.h>
 #include <wx/string.h>
+#include <wx/snglinst.h>
 
 #include <mutex>
 #include <stack>
@@ -29,11 +29,21 @@ class PresetBundle;
 class PresetUpdater;
 class ModelObject;
 class PrintHostJobQueue;
-
+class Model;
 
 namespace GUI{
 class RemovableDriveManager;
 class OtherInstanceMessageHandler;
+class MainFrame;
+class Sidebar;
+class ObjectManipulation;
+class ObjectSettings;
+class ObjectList;
+class ObjectLayers;
+class Plater;
+
+
+
 enum FileType
 {
     FT_STL,
@@ -106,6 +116,9 @@ class GUI_App : public wxApp
     std::unique_ptr<PrintHostJobQueue> m_printhost_job_queue;
     ConfigWizard* m_wizard;    // Managed by wxWindow tree
 	std::unique_ptr <OtherInstanceMessageHandler> m_other_instance_message_handler;
+    std::unique_ptr <wxSingleInstanceChecker> m_single_instance_checker;
+    std::string m_instance_hash_string;
+	size_t m_instance_hash_int;
 public:
     bool            OnInit() override;
     bool            initialized() const { return m_initialized; }
@@ -134,6 +147,7 @@ public:
     const wxFont&   bold_font()             { return m_bold_font; }
     const wxFont&   normal_font()           { return m_normal_font; }
     int             em_unit() const         { return m_em_unit; }
+    wxSize          get_min_size() const;
     float           toolbar_icon_scale(const bool is_limited = false) const;
     void            set_auto_toolbar_icon_scale(float scale) const;
 
@@ -194,6 +208,12 @@ public:
 
 	RemovableDriveManager* removable_drive_manager() { return m_removable_drive_manager.get(); }
 	OtherInstanceMessageHandler* other_instance_message_handler() { return m_other_instance_message_handler.get(); }
+    wxSingleInstanceChecker* single_instance_checker() {return m_single_instance_checker.get();}
+    
+	void        init_single_instance_checker(const std::string &name, const std::string &path);
+	void        set_instance_hash (const size_t hash) { m_instance_hash_int = hash; m_instance_hash_string = std::to_string(hash); }
+    std::string get_instance_hash_string ()           { return m_instance_hash_string; }
+	size_t      get_instance_hash_int ()              { return m_instance_hash_int; }
 
     ImGuiWrapper* imgui() { return m_imgui.get(); }
 

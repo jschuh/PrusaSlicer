@@ -448,6 +448,26 @@ void Model::convert_multipart_object(unsigned int max_extruders)
     this->objects.push_back(object);
 }
 
+bool Model::looks_like_imperial_units() const
+{
+    if (this->objects.size() == 0)
+        return false;
+
+    for (ModelObject* obj : this->objects)
+        if (obj->get_object_stl_stats().volume < 9.0) // 9 = 3*3*3;
+            return true;
+
+    return false;
+}
+
+void Model::convert_from_imperial_units()
+{
+    double in_to_mm = 25.4;
+    for (ModelObject* obj : this->objects)
+        if (obj->get_object_stl_stats().volume < 9.0) // 9 = 3*3*3;
+            obj->scale_mesh_after_creation(Vec3d(in_to_mm, in_to_mm, in_to_mm));
+}
+
 void Model::adjust_min_z()
 {
     if (objects.empty())
@@ -966,6 +986,56 @@ void ModelObject::scale_mesh_after_creation(const Vec3d &versor)
     this->invalidate_bounding_box();
 }
 
+void ModelObject::convert_units(ModelObjectPtrs& new_objects, bool from_imperial, std::vector<int> volume_idxs)
+{
+    BOOST_LOG_TRIVIAL(trace) << "ModelObject::convert_units - start";
+
+    ModelObject* new_object = new_clone(*this);
+
+    double koef = from_imperial ? 25.4 : 0.0393700787;
+    const Vec3d versor = Vec3d(koef, koef, koef);
+
+    new_object->set_model(nullptr);
+    new_object->sla_support_points.clear();
+    new_object->sla_drain_holes.clear();
+    new_object->sla_points_status = sla::PointsStatus::NoPoints;
+    new_object->clear_volumes();
+    new_object->input_file.clear();
+
+    int vol_idx = 0;
+    for (ModelVolume* volume : volumes)
+    {
+        volume->m_supported_facets.clear();
+        if (!volume->mesh().empty()) {
+            TriangleMesh mesh(volume->mesh());
+            mesh.require_shared_vertices();
+
+            ModelVolume* vol = new_object->add_volume(mesh);
+            vol->name = volume->name;
+            // Don't copy the config's ID.
+            static_cast<DynamicPrintConfig&>(vol->config) = static_cast<const DynamicPrintConfig&>(volume->config);
+            assert(vol->config.id().valid());
+            assert(vol->config.id() != volume->config.id());
+            vol->set_material(volume->material_id(), *volume->material());
+
+            // Perform conversion
+            if (volume_idxs.empty() || 
+                std::find(volume_idxs.begin(), volume_idxs.end(), vol_idx) != volume_idxs.end()) {
+                vol->scale_geometry_after_creation(versor);
+                vol->set_offset(versor.cwiseProduct(vol->get_offset()));
+            }
+            else
+                vol->set_offset(volume->get_offset());
+        }
+        vol_idx ++;
+    }
+    new_object->invalidate_bounding_box();
+
+    new_objects.push_back(new_object);
+
+    BOOST_LOG_TRIVIAL(trace) << "ModelObject::convert_units - end";
+}
+
 size_t ModelObject::materials_count() const
 {
     std::set<t_model_material_id> material_ids;
@@ -1196,6 +1266,27 @@ void ModelObject::split(ModelObjectPtrs* new_objects)
     return;
 }
 
+void ModelObject::merge()
+{
+    if (this->volumes.size() == 1) {
+        // We can't merge meshes if there's just one volume
+        return;
+    }
+
+    TriangleMesh mesh;
+
+    for (ModelVolume* volume : volumes)
+        if (!volume->mesh().empty())
+            mesh.merge(volume->mesh());
+    mesh.repair();
+
+    this->clear_volumes();
+    ModelVolume* vol = this->add_volume(mesh);
+
+    if (!vol)
+        return;
+}
+
 // Support for non-uniform scaling of instances. If an instance is rotated by angles, which are not multiples of ninety degrees,
 // then the scaling in world coordinate system is not representable by the Geometry::Transformation structure.
 // This situation is solved by baking in the instance transformation into the mesh vertices.
@@ -1308,8 +1399,8 @@ unsigned int ModelObject::check_instances_print_volume_state(const BoundingBoxf3
                     inside_outside |= OUTSIDE;
             }
         model_instance->print_volume_state = 
-            (inside_outside == (INSIDE | OUTSIDE)) ? ModelInstance::PVS_Partly_Outside :
-            (inside_outside == INSIDE) ? ModelInstance::PVS_Inside : ModelInstance::PVS_Fully_Outside;
+            (inside_outside == (INSIDE | OUTSIDE)) ? ModelInstancePVS_Partly_Outside :
+            (inside_outside == INSIDE) ? ModelInstancePVS_Inside : ModelInstancePVS_Fully_Outside;
         if (inside_outside == INSIDE)
             ++ num_printable;
     }
@@ -1389,9 +1480,6 @@ stl_stats ModelObject::get_object_stl_stats() const
     // fill full_stats from all objet's meshes
     for (ModelVolume* volume : this->volumes)
     {
-        if (volume->id() == this->volumes[0]->id())
-            continue;
-
         const stl_stats& stats = volume->mesh().stl.stats;
 
         // initialize full_stats (for repaired errors)

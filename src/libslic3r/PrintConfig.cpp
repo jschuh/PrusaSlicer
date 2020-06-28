@@ -85,6 +85,8 @@ void PrintConfigDef::init_common_params()
     def->label = L("Max print height");
     def->tooltip = L("Set this to the maximum height that can be reached by your extruder while printing.");
     def->sidetext = L("mm");
+    def->min = 0;
+    def->max = 1200;
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(200.0));
 
@@ -1096,8 +1098,8 @@ void PrintConfigDef::init_fff_params()
     def->set_default_value(new ConfigOptionBool(false));
 
     def = this->add("ironing_type", coEnum);
-    def->label = L("Ironingy Type");
-    def->tooltip = L("Ironingy Type");
+    def->label = L("Ironing Type");
+    def->tooltip = L("Ironing Type");
     def->enum_keys_map = &ConfigOptionEnum<IroningType>::get_enum_values();
     def->enum_values.push_back("top");
     def->enum_values.push_back("topmost");
@@ -1906,6 +1908,33 @@ void PrintConfigDef::init_fff_params()
     def->height = 12;
     def->mode = comExpert;
     def->set_default_value(new ConfigOptionStrings { "; Filament gcode\n" });
+
+    def = this->add("color_change_gcode", coString);
+    def->label = L("Color change G-code");
+    def->tooltip = L("This G-code will be used as a code for the color change");
+    def->multiline = true;
+    def->full_width = true;
+    def->height = 12;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionString("M600"));
+
+    def = this->add("pause_print_gcode", coString);
+    def->label = L("Pause Print G-code");
+    def->tooltip = L("This G-code will be used as a code for the pause print");
+    def->multiline = true;
+    def->full_width = true;
+    def->height = 12;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionString("M601"));
+
+    def = this->add("template_custom_gcode", coString);
+    def->label = L("Custom G-code");
+    def->tooltip = L("This G-code will be used as a custom code");
+    def->multiline = true;
+    def->full_width = true;
+    def->height = 12;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionString(""));
 
     def = this->add("single_extruder_multi_material", coBool);
     def->label = L("Single Extruder Multi Material");

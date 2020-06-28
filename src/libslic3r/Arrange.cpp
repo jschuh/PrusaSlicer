@@ -1,6 +1,7 @@
 #include "Arrange.hpp"
-//#include "Geometry.hpp"
 #include "SVG.hpp"
+
+#include "BoundingBox.hpp"
 
 #include <libnest2d/backends/clipper/geometries.hpp>
 #include <libnest2d/optimizers/nlopt/subplex.hpp>
@@ -51,8 +52,8 @@ template<class S> struct NfpImpl<S, NfpLevel::CONVEX_ONLY>
 namespace Slic3r {
 
 template<class Tout = double, class = FloatingOnly<Tout>, int...EigenArgs>
-inline SLIC3R_CONSTEXPR Eigen::Matrix<Tout, 2, EigenArgs...> unscaled(
-    const ClipperLib::IntPoint &v) SLIC3R_NOEXCEPT
+inline constexpr Eigen::Matrix<Tout, 2, EigenArgs...> unscaled(
+    const ClipperLib::IntPoint &v) noexcept
 {
     return Eigen::Matrix<Tout, 2, EigenArgs...>{unscaled<Tout>(v.X),
                                                 unscaled<Tout>(v.Y)};
@@ -395,11 +396,14 @@ template<> std::function<double(const Item&)> AutoArranger<Box>::get_objfn()
         double score = std::get<0>(result);
         auto& fullbb = std::get<1>(result);
         
-        double miss = Placer::overfit(fullbb, m_bin);
+        auto bin = m_bin;
+        sl::offset(bin, -EPSILON * (m_bin.width() + m_bin.height()));
+
+        double miss = Placer::overfit(fullbb, bin);
         miss = miss > 0? miss : 0;
         score += miss*miss;
         
-        return score;    
+        return score;
     };
 }
 

@@ -103,6 +103,8 @@ public:
     Vec3d b;
 };
 
+BoundingBox get_extents(const Lines &lines);
+
 } // namespace Slic3r
 
 // start Boost
@@ -123,4 +125,4 @@ namespace boost { namespace polygon {
 } }
 // end Boost
 
-#endif
+#endif // slic3r_Line_hpp_

@@ -13,6 +13,8 @@
 #include "wxExtensions.hpp"
 #include "ObjectDataViewModel.hpp"
 
+#include "libslic3r/PrintConfig.hpp"
+
 class wxBoxSizer;
 class wxBitmapComboBox;
 class wxMenuItem;
@@ -81,9 +83,31 @@ public:
         smLayerRoot = 16, // used for undo/redo
     };
 
+    struct Clipboard
+    {
+        void reset() {
+            m_type = itUndef; 
+            m_layer_config_ranges_cache .clear();
+            m_config_cache.clear();
+        }
+        bool        empty()    const { return m_type == itUndef; }
+        ItemType    get_type() const { return m_type; }
+        void        set_type(ItemType type) { m_type = type; }
+
+        t_layer_config_ranges&  get_ranges_cache() { return m_layer_config_ranges_cache; }
+        DynamicPrintConfig&     get_config_cache() { return m_config_cache; }
+
+    private:
+        ItemType                m_type {itUndef};
+        t_layer_config_ranges   m_layer_config_ranges_cache;
+        DynamicPrintConfig      m_config_cache;
+    };
+
 private:
     SELECTION_MODE  m_selection_mode {smUndef};
     int             m_selected_layers_range_idx;
+
+    Clipboard       m_clipboard;
 
     struct dragged_item_data
     {
@@ -148,8 +172,6 @@ private:
 
     std::vector<wxBitmap*>      m_bmp_vector;
 
-    t_layer_config_ranges       m_layer_config_ranges_cache;
-
     int			m_selected_object_id = -1;
     bool		m_prevent_list_events = false;		// We use this flag to avoid circular event handling Select() 
                                                     // happens to fire a wxEVT_LIST_ITEM_SELECTED on OSX, whose event handler 
@@ -210,6 +232,7 @@ public:
 
     // Get obj_idx and vol_idx values for the selected (by default) or an adjusted item
     void                get_selected_item_indexes(int& obj_idx, int& vol_idx, const wxDataViewItem& item = wxDataViewItem(0));
+    void                get_selection_indexes(std::vector<int>& obj_idxs, std::vector<int>& vol_idxs);
     // Get count of errors in the mesh
     int                 get_mesh_errors_count(const int obj_idx, const int vol_idx = -1) const;
     /* Get list of errors in the mesh. Return value is a string, used for the tooltip
@@ -229,6 +252,8 @@ public:
 
     void                copy();
     void                paste();
+    bool                copy_to_clipboard();
+    bool                paste_from_clipboard();
     void                undo();
     void                redo();
 
@@ -252,6 +277,9 @@ public:
     void                append_menu_item_change_extruder(wxMenu* menu);
     void                append_menu_item_delete(wxMenu* menu);
     void                append_menu_item_scale_selection_to_fit_print_volume(wxMenu* menu);
+    void                append_menu_items_convert_unit(wxMenu* menu);
+    void                append_menu_item_merge_to_multipart_object(wxMenu *menu);
+    void                append_menu_item_merge_to_single_object(wxMenu *menu);
     void                create_object_popupmenu(wxMenu *menu);
     void                create_sla_object_popupmenu(wxMenu*menu);
     void                create_part_popupmenu(wxMenu*menu);
@@ -275,6 +303,7 @@ public:
     void                del_layers_from_object(const int obj_idx);
     bool                del_subobject_from_object(const int obj_idx, const int idx, const int type);
     void                split();
+    void                merge(bool to_multipart_object);
     void                layers_editing();
 
     wxDataViewItem      add_layer_root_item(const wxDataViewItem obj_item);
@@ -285,6 +314,8 @@ public:
     bool                is_splittable();
     bool                selected_instances_of_same_object();
     bool                can_split_instances();
+    bool                can_merge_to_multipart_object() const;
+    bool                can_merge_to_single_object() const;
 
     wxPoint             get_mouse_position_in_control() const { return wxGetMousePosition() - this->GetScreenPosition(); }
     wxBoxSizer*         get_sizer() {return  m_sizer;}
@@ -378,12 +409,16 @@ public:
     void fix_through_netfabb();
     void update_item_error_icon(const int obj_idx, int vol_idx) const ;
 
-    void fill_layer_config_ranges_cache();
+    void copy_layers_to_clipboard();
     void paste_layers_into_list();
+    void copy_settings_to_clipboard();
+    void paste_settings_into_list();
+    bool clipboard_is_empty() const { return m_clipboard.empty(); } 
     void paste_volumes_into_list(int obj_idx, const ModelVolumePtrs& volumes);
     void paste_objects_into_list(const std::vector<size_t>& object_idxs);
 
     void msw_rescale();
+    void sys_color_changed();
 
     void update_after_undo_redo();
     //update printable state for item from objects model

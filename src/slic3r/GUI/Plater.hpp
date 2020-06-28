@@ -25,9 +25,12 @@ namespace Slic3r {
 
 class Model;
 class ModelObject;
+class ModelInstance;
 class Print;
 class SLAPrint;
 enum SLAPrintObjectStep : unsigned int;
+
+using ModelInstancePtrs = std::vector<ModelInstance*>;
 
 namespace UndoRedo {
     class Stack;
@@ -105,6 +108,7 @@ public:
     void update_mode_sizer() const;
     void update_reslice_btn_tooltip() const;
     void msw_rescale();
+    void sys_color_changed();
     void search();
     void jump_to_option(size_t selected);
 
@@ -133,6 +137,7 @@ public:
     bool                    is_collapsed();
     void                    collapse(bool collapse);
     void                    update_searcher();
+    void                    update_ui_from_settings();
 
     std::vector<PresetComboBox*>&   combos_filament();
     Search::OptionsSearcher&        get_searcher();
@@ -165,13 +170,13 @@ public:
     void new_project();
     void load_project();
     void load_project(const wxString& filename);
-    void add_model();
+    void add_model(bool imperial_units = false);
     void import_sl1_archive();
     void extract_config_from_project();
 
-    std::vector<size_t> load_files(const std::vector<boost::filesystem::path>& input_files, bool load_model = true, bool load_config = true);
+    std::vector<size_t> load_files(const std::vector<boost::filesystem::path>& input_files, bool load_model = true, bool load_config = true, bool imperial_units = false);
     // To be called when providing a list of files to the GUI slic3r on command line.
-    std::vector<size_t> load_files(const std::vector<std::string>& input_files, bool load_model = true, bool load_config = true);
+    std::vector<size_t> load_files(const std::vector<std::string>& input_files, bool load_model = true, bool load_config = true, bool imperial_units = false);
 
     void update();
     void stop_jobs();
@@ -211,6 +216,7 @@ public:
     void set_number_of_copies(/*size_t num*/);
     bool is_selection_empty() const;
     void scale_selection_to_fit_print_volume();
+    void convert_unit(bool from_imperial_unit);
 
     void cut(size_t obj_idx, size_t instance_idx, coordf_t z, bool keep_upper = true, bool keep_lower = true, bool rotate_lower = false);
 
@@ -306,17 +312,27 @@ public:
     bool can_reload_from_disk() const;
 
     void msw_rescale();
+    void sys_color_changed();
 
     bool init_view_toolbar();
+    bool init_collapse_toolbar();
 
     const Camera& get_camera() const;
     Camera& get_camera();
+
+#if ENABLE_ENVIRONMENT_MAP
+    void init_environment_texture();
+    unsigned int get_environment_texture_id() const;
+#endif // ENABLE_ENVIRONMENT_MAP
 
     const Bed3D& get_bed() const;
     Bed3D& get_bed();
 
     const GLToolbar& get_view_toolbar() const;
     GLToolbar& get_view_toolbar();
+
+    const GLToolbar& get_collapse_toolbar() const;
+    GLToolbar& get_collapse_toolbar();
 
     const Mouse3DController& get_mouse3d_controller() const;
     Mouse3DController& get_mouse3d_controller();

@@ -24,6 +24,9 @@
 #include "AppConfig.hpp"
 #include "PresetBundle.hpp"
 #include "BedShapeDialog.hpp"
+#include "GUI.hpp"
+#include "wxExtensions.hpp"
+
 
 namespace fs = boost::filesystem;
 
@@ -312,6 +315,8 @@ struct PageMode: ConfigWizardPage
     wxRadioButton *radio_simple;
     wxRadioButton *radio_advanced;
     wxRadioButton *radio_expert;
+
+    wxCheckBox    *check_inch;
 
     PageMode(ConfigWizard *parent);
 

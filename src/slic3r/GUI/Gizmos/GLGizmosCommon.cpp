@@ -6,6 +6,9 @@
 #include "libslic3r/SLAPrint.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/Camera.hpp"
+#include "slic3r/GUI/Plater.hpp"
+
+#include "slic3r/GUI/PresetBundle.hpp"
 
 #include <GL/glew.h>
 
@@ -169,7 +172,8 @@ void InstancesHider::show_supports(bool show) {
 void HollowedMesh::on_update()
 {
     const ModelObject* mo = get_pool()->selection_info()->model_object();
-    if (! mo)
+    bool is_sla = wxGetApp().preset_bundle->printers.get_selected_preset().printer_technology() == ptSLA;
+    if (! mo || ! is_sla)
         return;
 
     const GLCanvas3D* canvas = get_pool()->get_canvas();
@@ -342,15 +346,11 @@ void ObjectClipper::render_cut() const
         clipper->set_plane(*m_clp);
         clipper->set_transformation(trafo);
 
-        if (! clipper->get_triangles().empty()) {
-            ::glPushMatrix();
-            ::glColor3f(1.0f, 0.37f, 0.0f);
-            ::glBegin(GL_TRIANGLES);
-            for (const Vec3f& point : clipper->get_triangles())
-                ::glVertex3f(point(0), point(1), point(2));
-            ::glEnd();
-            ::glPopMatrix();
-        }
+        ::glPushMatrix();
+        ::glColor3f(1.0f, 0.37f, 0.0f);
+        clipper->render_cut();
+        ::glPopMatrix();
+
         ++clipper_id;
     }
 }
@@ -379,7 +379,8 @@ void ObjectClipper::set_position(double pos, bool keep_normal)
 void SupportsClipper::on_update()
 {
     const ModelObject* mo = get_pool()->selection_info()->model_object();
-    if (! mo)
+    bool is_sla = wxGetApp().preset_bundle->printers.get_selected_preset().printer_technology() == ptSLA;
+    if (! mo || ! is_sla)
         return;
 
     const GLCanvas3D* canvas = get_pool()->get_canvas();
@@ -447,6 +448,7 @@ void SupportsClipper::render_cut() const
 
     // Get transformation of supports
     Geometry::Transformation supports_trafo = trafo;
+    supports_trafo.set_scaling_factor(Vec3d::Ones());
     supports_trafo.set_offset(Vec3d(trafo.get_offset()(0), trafo.get_offset()(1), sel_info->get_sla_shift()));
     supports_trafo.set_rotation(Vec3d(0., 0., trafo.get_rotation()(2)));
     // I don't know why, but following seems to be correct.
@@ -457,15 +459,10 @@ void SupportsClipper::render_cut() const
     m_clipper->set_plane(*ocl->get_clipping_plane());
     m_clipper->set_transformation(supports_trafo);
 
-    if (! m_clipper->get_triangles().empty()) {
-        ::glPushMatrix();
-        ::glColor3f(1.0f, 0.f, 0.37f);
-        ::glBegin(GL_TRIANGLES);
-        for (const Vec3f& point : m_clipper->get_triangles())
-            ::glVertex3f(point(0), point(1), point(2));
-        ::glEnd();
-        ::glPopMatrix();
-    }
+    ::glPushMatrix();
+    ::glColor3f(1.0f, 0.f, 0.37f);
+    m_clipper->render_cut();
+    ::glPopMatrix();
 }
 
 

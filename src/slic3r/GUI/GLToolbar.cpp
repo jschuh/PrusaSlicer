@@ -6,6 +6,7 @@
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/Camera.hpp"
+#include "slic3r/GUI/Plater.hpp"
 
 #include <wx/event.h>
 #include <wx/bitmap.h>
@@ -153,9 +154,6 @@ GLToolbar::GLToolbar(GLToolbar::EType type, const std::string& name)
     , m_name(name)
     , m_enabled(false)
     , m_icons_texture_dirty(true)
-#if !ENABLE_CANVAS_TOOLTIP_USING_IMGUI
-    , m_tooltip("")
-#endif // !ENABLE_CANVAS_TOOLTIP_USING_IMGUI
     , m_pressed_toggable_id(-1)
 {
 }
@@ -359,7 +357,6 @@ int GLToolbar::get_item_id(const std::string& name) const
     return -1;
 }
 
-#if ENABLE_CANVAS_TOOLTIP_USING_IMGUI
 std::string GLToolbar::get_tooltip() const
 {
     std::string tooltip;
@@ -382,7 +379,6 @@ std::string GLToolbar::get_tooltip() const
 
     return tooltip;
 }
-#endif // ENABLE_CANVAS_TOOLTIP_USING_IMGUI
 
 void GLToolbar::get_additional_tooltip(int item_id, std::string& text)
 {
@@ -449,17 +445,11 @@ bool GLToolbar::on_mouse(wxMouseEvent& evt, GLCanvas3D& parent)
             // prevents loosing selection into the scene if mouse down was done inside the toolbar and mouse up was down outside it,
             // as when switching between views
             m_mouse_capture.reset();
-#if !ENABLE_CANVAS_TOOLTIP_USING_IMGUI
-            if (contains_mouse(mouse_pos, parent) == -1)
-                // mouse is outside the toolbar
-                m_tooltip.clear();
-#endif // !ENABLE_CANVAS_TOOLTIP_USING_IMGUI
             return true;
         }
         m_mouse_capture.reset();
     }
 
-#if ENABLE_CANVAS_TOOLTIP_USING_IMGUI
     if (evt.Moving())
         update_hover_state(mouse_pos, parent);
     else if (evt.LeftUp())
@@ -500,31 +490,9 @@ bool GLToolbar::on_mouse(wxMouseEvent& evt, GLCanvas3D& parent)
         else
             return false;
     }
-#else
-    if (evt.Moving())
-        m_tooltip = update_hover_state(mouse_pos, parent);
-    else if (evt.LeftUp())
-        m_mouse_capture.left = false;
-    else if (evt.MiddleUp())
-        m_mouse_capture.middle = false;
-    else if (evt.RightUp())
-        m_mouse_capture.right = false;
-    else if (evt.Dragging() && m_mouse_capture.any())
-        // if the button down was done on this toolbar, prevent from dragging into the scene
-        processed = true;
-#endif // ENABLE_CANVAS_TOOLTIP_USING_IMGUI
 
     int item_id = contains_mouse(mouse_pos, parent);
-#if ENABLE_CANVAS_TOOLTIP_USING_IMGUI
     if (item_id != -1)
-#else
-    if (item_id == -1)
-    {
-        // mouse is outside the toolbar
-        m_tooltip.clear();
-    }
-    else
-#endif // ENABLE_CANVAS_TOOLTIP_USING_IMGUI
     {
         // mouse inside toolbar
         if (evt.LeftDown() || evt.LeftDClick())
@@ -532,12 +500,8 @@ bool GLToolbar::on_mouse(wxMouseEvent& evt, GLCanvas3D& parent)
             m_mouse_capture.left = true;
             m_mouse_capture.parent = &parent;
             processed = true;
-#if ENABLE_CANVAS_TOOLTIP_USING_IMGUI
             if ((item_id != -2) && !m_items[item_id]->is_separator() && !m_items[item_id]->is_disabled() &&
                 ((m_pressed_toggable_id == -1) || (m_items[item_id]->get_last_action_type() == GLToolbarItem::Left)))
-#else
-            if ((item_id != -2) && !m_items[item_id]->is_separator() && ((m_pressed_toggable_id == -1) || (m_items[item_id]->get_last_action_type() == GLToolbarItem::Left)))
-#endif // ENABLE_CANVAS_TOOLTIP_USING_IMGUI
             {
                 // mouse is inside an icon
                 do_action(GLToolbarItem::Left, item_id, parent, true);
@@ -554,22 +518,14 @@ bool GLToolbar::on_mouse(wxMouseEvent& evt, GLCanvas3D& parent)
             m_mouse_capture.right = true;
             m_mouse_capture.parent = &parent;
             processed = true;
-#if ENABLE_CANVAS_TOOLTIP_USING_IMGUI
             if ((item_id != -2) && !m_items[item_id]->is_separator() && !m_items[item_id]->is_disabled() &&
                 ((m_pressed_toggable_id == -1) || (m_items[item_id]->get_last_action_type() == GLToolbarItem::Right)))
-#else
-            if ((item_id != -2) && !m_items[item_id]->is_separator() && ((m_pressed_toggable_id == -1) || (m_items[item_id]->get_last_action_type() == GLToolbarItem::Right)))
-#endif // ENABLE_CANVAS_TOOLTIP_USING_IMGUI
             {
                 // mouse is inside an icon
                 do_action(GLToolbarItem::Right, item_id, parent, true);
                 parent.set_as_dirty();
             }
         }
-#if !ENABLE_CANVAS_TOOLTIP_USING_IMGUI
-        else if (evt.LeftUp())
-            processed = true;
-#endif // !ENABLE_CANVAS_TOOLTIP_USING_IMGUI
     }
 
     return processed;
@@ -654,11 +610,7 @@ void GLToolbar::do_action(GLToolbarItem::EActionType type, int item_id, GLCanvas
         if ((0 <= item_id) && (item_id < (int)m_items.size()))
         {
             GLToolbarItem* item = m_items[item_id];
-#if ENABLE_CANVAS_TOOLTIP_USING_IMGUI
             if ((item != nullptr) && !item->is_separator() && !item->is_disabled() && (!check_hover || item->is_hovered()))
-#else
-            if ((item != nullptr) && !item->is_separator() && (!check_hover || item->is_hovered()))
-#endif // ENABLE_CANVAS_TOOLTIP_USING_IMGUI
             {
                 if (((type == GLToolbarItem::Right) && item->is_right_toggable()) ||
                     ((type == GLToolbarItem::Left) && item->is_left_toggable()))
@@ -712,7 +664,6 @@ void GLToolbar::do_action(GLToolbarItem::EActionType type, int item_id, GLCanvas
     }
 }
 
-#if ENABLE_CANVAS_TOOLTIP_USING_IMGUI
 void GLToolbar::update_hover_state(const Vec2d& mouse_pos, GLCanvas3D& parent)
 {
     if (!m_enabled)
@@ -725,26 +676,8 @@ void GLToolbar::update_hover_state(const Vec2d& mouse_pos, GLCanvas3D& parent)
     case Layout::Vertical: { update_hover_state_vertical(mouse_pos, parent); break; }
     }
 }
-#else
-std::string GLToolbar::update_hover_state(const Vec2d& mouse_pos, GLCanvas3D& parent)
-{
-    if (!m_enabled)
-        return "";
 
-    switch (m_layout.type)
-    {
-    default:
-    case Layout::Horizontal: { return update_hover_state_horizontal(mouse_pos, parent); }
-    case Layout::Vertical: { return update_hover_state_vertical(mouse_pos, parent); }
-    }
-}
-#endif // ENABLE_CANVAS_TOOLTIP_USING_IMGUI
-
-#if ENABLE_CANVAS_TOOLTIP_USING_IMGUI
 void GLToolbar::update_hover_state_horizontal(const Vec2d& mouse_pos, GLCanvas3D& parent)
-#else
-std::string GLToolbar::update_hover_state_horizontal(const Vec2d& mouse_pos, GLCanvas3D& parent)
-#endif // ENABLE_CANVAS_TOOLTIP_USING_IMGUI
 {
     // NB: mouse_pos is already scaled appropriately
 
@@ -764,10 +697,6 @@ std::string GLToolbar::update_hover_state_horizontal(const Vec2d& mouse_pos, GLC
 
     float left = m_layout.left + scaled_border;
     float top = m_layout.top - scaled_border;
-
-#if !ENABLE_CANVAS_TOOLTIP_USING_IMGUI
-    std::string tooltip;
-#endif // !ENABLE_CANVAS_TOOLTIP_USING_IMGUI
 
     for (GLToolbarItem* item : m_items)
     {
@@ -783,18 +712,6 @@ std::string GLToolbar::update_hover_state_horizontal(const Vec2d& mouse_pos, GLC
 
             GLToolbarItem::EState state = item->get_state();
             bool inside = (left <= (float)scaled_mouse_pos(0)) && ((float)scaled_mouse_pos(0) <= right) && (bottom <= (float)scaled_mouse_pos(1)) && ((float)scaled_mouse_pos(1) <= top);
-#if !ENABLE_CANVAS_TOOLTIP_USING_IMGUI
-            if (inside)
-            {
-                tooltip = item->get_tooltip();
-                if (!item->is_pressed())
-                {
-                    const std::string& additional_tooltip = item->get_additional_tooltip();
-                    if (!additional_tooltip.empty())
-                        tooltip += "\n" + additional_tooltip;
-                }
-            }
-#endif // !ENABLE_CANVAS_TOOLTIP_USING_IMGUI
 
             switch (state)
             {
@@ -838,7 +755,6 @@ std::string GLToolbar::update_hover_state_horizontal(const Vec2d& mouse_pos, GLC
 
                 break;
             }
-#if ENABLE_CANVAS_TOOLTIP_USING_IMGUI
             case GLToolbarItem::Disabled:
             {
                 if (inside)
@@ -863,29 +779,14 @@ std::string GLToolbar::update_hover_state_horizontal(const Vec2d& mouse_pos, GLC
             {
                 break;
             }
-#else
-            default:
-            case GLToolbarItem::Disabled:
-            {
-                break;
-            }
-#endif // ENABLE_CANVAS_TOOLTIP_USING_IMGUI
             }
 
             left += icon_stride;
         }
     }
-
-#if !ENABLE_CANVAS_TOOLTIP_USING_IMGUI
-    return tooltip;
-#endif // !ENABLE_CANVAS_TOOLTIP_USING_IMGUI
 }
 
-#if ENABLE_CANVAS_TOOLTIP_USING_IMGUI
 void GLToolbar::update_hover_state_vertical(const Vec2d& mouse_pos, GLCanvas3D& parent)
-#else
-std::string GLToolbar::update_hover_state_vertical(const Vec2d& mouse_pos, GLCanvas3D& parent)
-#endif // ENABLE_CANVAS_TOOLTIP_USING_IMGUI
 {
     // NB: mouse_pos is already scaled appropriately
 
@@ -905,10 +806,6 @@ std::string GLToolbar::update_hover_state_vertical(const Vec2d& mouse_pos, GLCan
     float left = m_layout.left + scaled_border;
     float top = m_layout.top - scaled_border;
 
-#if !ENABLE_CANVAS_TOOLTIP_USING_IMGUI
-    std::string tooltip;
-#endif // !ENABLE_CANVAS_TOOLTIP_USING_IMGUI
-
     for (GLToolbarItem* item : m_items)
     {
         if (!item->is_visible())
@@ -923,18 +820,6 @@ std::string GLToolbar::update_hover_state_vertical(const Vec2d& mouse_pos, GLCan
 
             GLToolbarItem::EState state = item->get_state();
             bool inside = (left <= (float)scaled_mouse_pos(0)) && ((float)scaled_mouse_pos(0) <= right) && (bottom <= (float)scaled_mouse_pos(1)) && ((float)scaled_mouse_pos(1) <= top);
-#if !ENABLE_CANVAS_TOOLTIP_USING_IMGUI
-            if (inside)
-            {
-                tooltip = item->get_tooltip();
-                if (!item->is_pressed())
-                {
-                    const std::string& additional_tooltip = item->get_additional_tooltip();
-                    if (!additional_tooltip.empty())
-                        tooltip += "\n" + additional_tooltip;
-                }
-            }
-#endif // !ENABLE_CANVAS_TOOLTIP_USING_IMGUI
 
             switch (state)
             {
@@ -978,7 +863,6 @@ std::string GLToolbar::update_hover_state_vertical(const Vec2d& mouse_pos, GLCan
 
                 break;
             }
-#if ENABLE_CANVAS_TOOLTIP_USING_IMGUI
             case GLToolbarItem::Disabled:
             {
                 if (inside)
@@ -1003,22 +887,11 @@ std::string GLToolbar::update_hover_state_vertical(const Vec2d& mouse_pos, GLCan
             {
                 break;
             }
-#else
-            default:
-            case GLToolbarItem::Disabled:
-            {
-                break;
-            }
-#endif // ENABLE_CANVAS_TOOLTIP_USING_IMGUI
             }
 
             top -= icon_stride;
         }
     }
-
-#if !ENABLE_CANVAS_TOOLTIP_USING_IMGUI
-    return tooltip;
-#endif // !ENABLE_CANVAS_TOOLTIP_USING_IMGUI
 }
 
 int GLToolbar::contains_mouse(const Vec2d& mouse_pos, const GLCanvas3D& parent) const
@@ -1365,39 +1238,23 @@ bool GLToolbar::generate_icons_texture() const
     }
 
     std::vector<std::pair<int, bool>> states;
-    if (m_name == "Top")
+    if (m_type == Normal)
     {
-#if ENABLE_CANVAS_TOOLTIP_USING_IMGUI
         states.push_back({ 1, false }); // Normal
         states.push_back({ 0, false }); // Pressed
         states.push_back({ 2, false }); // Disabled
         states.push_back({ 0, false }); // Hover
         states.push_back({ 0, false }); // HoverPressed
         states.push_back({ 2, false }); // HoverDisabled
-#else
-        states.push_back(std::make_pair(1, false));
-        states.push_back(std::make_pair(0, false));
-        states.push_back(std::make_pair(2, false));
-        states.push_back(std::make_pair(0, false));
-        states.push_back(std::make_pair(0, false));
-#endif // ENABLE_CANVAS_TOOLTIP_USING_IMGUI
     }
-    else if (m_name == "View")
+    else
     {
-#if ENABLE_CANVAS_TOOLTIP_USING_IMGUI
         states.push_back({ 1, false }); // Normal
         states.push_back({ 1, true });  // Pressed
         states.push_back({ 1, false }); // Disabled
         states.push_back({ 0, false }); // Hover
         states.push_back({ 1, true });  // HoverPressed
         states.push_back({ 1, false }); // HoverDisabled
-#else
-        states.push_back(std::make_pair(1, false));
-        states.push_back(std::make_pair(1, true));
-        states.push_back(std::make_pair(1, false));
-        states.push_back(std::make_pair(0, false));
-        states.push_back(std::make_pair(1, true));
-#endif // ENABLE_CANVAS_TOOLTIP_USING_IMGUI
     }
 
     unsigned int sprite_size_px = (unsigned int)(m_layout.icons_size * m_layout.scale);

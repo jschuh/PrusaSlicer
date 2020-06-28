@@ -4,13 +4,13 @@
 #include "GUI_App.hpp"
 #include "GUI.hpp"
 #include "I18N.hpp"
-#include "AppConfig.hpp"
 #include "3DScene.hpp"
 #include "BackgroundSlicingProcess.hpp"
 #include "OpenGLManager.hpp"
 #include "GLCanvas3D.hpp"
 #include "PresetBundle.hpp"
 #include "DoubleSlider.hpp"
+#include "Plater.hpp"
 
 #include <wx/notebook.h>
 #include <wx/glcanvas.h>
@@ -68,7 +68,6 @@ bool View3D::init(wxWindow* parent, Model* model, DynamicPrintConfig* config, Ba
     m_canvas->enable_selection(true);
     m_canvas->enable_main_toolbar(true);
     m_canvas->enable_undoredo_toolbar(true);
-    m_canvas->enable_collapse_toolbar(true);
     m_canvas->enable_labels(true);
 #if ENABLE_SLOPE_RENDERING
     m_canvas->enable_slope(true);
@@ -222,7 +221,6 @@ bool Preview::init(wxWindow* parent, Model* model)
     m_canvas->set_process(m_process);
     m_canvas->enable_legend_texture(true);
     m_canvas->enable_dynamic_background(true);
-    m_canvas->enable_collapse_toolbar(true);
 
     m_double_slider_sizer = new wxBoxSizer(wxHORIZONTAL);
     create_double_slider();
@@ -580,10 +578,10 @@ void Preview::update_view_type(bool slice_completed)
 
     const wxString& choice = !wxGetApp().plater()->model().custom_gcode_per_print_z.gcodes.empty() /*&&
                              (wxGetApp().extruders_edited_cnt()==1 || !slice_completed) */? 
-                                _(L("Color Print")) :
+                                _L("Color Print") :
                                 config.option<ConfigOptionFloats>("wiping_volumes_matrix")->values.size() > 1 ?
-                                    _(L("Tool")) : 
-                                    _(L("Feature type"));
+                                    _L("Tool") : 
+                                    _L("Feature type");
 
     int type = m_choice_view_type->FindString(choice);
     if (m_choice_view_type->GetSelection() != type) {
@@ -592,6 +590,8 @@ void Preview::update_view_type(bool slice_completed)
             m_gcode_preview_data->extrusion.view_type = (GCodePreviewData::Extrusion::EViewType)type;
         m_preferred_color_mode = "feature";
     }
+
+    reload_print();
 }
 
 void Preview::create_double_slider()
@@ -620,8 +620,6 @@ void Preview::create_double_slider()
         m_schedule_background_process();
 
         update_view_type(false);
-
-        reload_print();
     });
 }
 

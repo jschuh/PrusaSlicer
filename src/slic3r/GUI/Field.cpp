@@ -3,6 +3,8 @@
 #include "I18N.hpp"
 #include "Field.hpp"
 #include "wxExtensions.hpp"
+#include "Plater.hpp"
+#include "MainFrame.hpp"
 
 #include "libslic3r/PrintConfig.hpp"
 
@@ -92,6 +94,12 @@ void Field::PostInitialize()
 			    case '2': { tab_id = 1; break; }
 				case '3': { tab_id = 2; break; }
 				case '4': { tab_id = 3; break; }
+#ifdef __APPLE__
+				case 'f':
+#else /* __APPLE__ */
+				case WXK_CONTROL_F:
+#endif /* __APPLE__ */
+				case 'F': { wxGetApp().plater()->search(false); break; }
 			    default: break;
 			    }
 			    if (tab_id >= 0)
@@ -298,6 +306,12 @@ void Field::msw_rescale(bool rescale_sidetext)
 		m_side_text->SetSize(size);
 		m_side_text->SetMinSize(size);
 	}
+}
+
+void Field::sys_color_changed()
+{
+	m_Undo_to_sys_btn->msw_rescale();
+	m_Undo_btn->msw_rescale();
 }
 
 template<class T>

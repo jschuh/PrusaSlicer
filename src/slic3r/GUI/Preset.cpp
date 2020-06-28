@@ -461,6 +461,7 @@ const std::vector<std::string>& Preset::printer_options()
             "use_firmware_retraction", "use_volumetric_e", "variable_layer_height",
             "host_type", "print_host", "printhost_apikey", "printhost_cafile",
             "single_extruder_multi_material", "start_gcode", "end_gcode", "before_layer_gcode", "layer_gcode", "toolchange_gcode",
+            "color_change_gcode", "pause_print_gcode", "template_custom_gcode",
             "between_objects_gcode", "printer_vendor", "printer_model", "printer_variant", "printer_notes", "cooling_tube_retraction",
             "cooling_tube_length", "high_current_on_filament_swap", "parking_pos_retraction", "extra_loading_move", "max_print_height",
             "default_print_profile", "inherits",
@@ -962,7 +963,7 @@ void PresetCollection::load_bitmap_add(const std::string &file_name)
 
 const Preset* PresetCollection::get_selected_preset_parent() const
 {
-    if (this->get_selected_idx() == -1)
+    if (this->get_selected_idx() == size_t(-1))
         // This preset collection has no preset activated yet. Only the get_edited_preset() is valid.
         return nullptr;
 

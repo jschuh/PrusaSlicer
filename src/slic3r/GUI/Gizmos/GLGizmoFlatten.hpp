@@ -2,9 +2,14 @@
 #define slic3r_GLGizmoFlatten_hpp_
 
 #include "GLGizmoBase.hpp"
+#include "slic3r/GUI/3DScene.hpp"
 
 
 namespace Slic3r {
+
+enum class ModelVolumeType : int;
+
+
 namespace GUI {
 
 
@@ -16,7 +21,8 @@ private:
     mutable Vec3d m_normal;
 
     struct PlaneData {
-        std::vector<Vec3d> vertices;
+        std::vector<Vec3d> vertices; // should be in fact local in update_planes()
+        GLIndexedVertexArray vbo;
         Vec3d normal;
         float area;
     };

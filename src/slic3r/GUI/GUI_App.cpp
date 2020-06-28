@@ -36,6 +36,9 @@
 #include "GUI_Utils.hpp"
 #include "AppConfig.hpp"
 #include "PresetBundle.hpp"
+#include "3DScene.hpp"
+#include "MainFrame.hpp"
+#include "Plater.hpp"
 
 #include "../Utils/PresetUpdater.hpp"
 #include "../Utils/PrintHost.hpp"
@@ -103,6 +106,7 @@ wxString file_wildcards(FileType file_type, const std::string &custom_extension)
 static std::string libslic3r_translate_callback(const char *s) { return wxGetTranslation(wxString(s, wxConvUTF8)).utf8_str().data(); }
 
 #ifdef WIN32
+#if !wxVERSION_EQUAL_OR_GREATER_THAN(3,1,3)
 static void register_win32_dpi_event()
 {
     enum { WM_DPICHANGED_ = 0x02e0 };
@@ -118,13 +122,12 @@ static void register_win32_dpi_event()
         return true;
     });
 }
+#endif // !wxVERSION_EQUAL_OR_GREATER_THAN
 
 static GUID GUID_DEVINTERFACE_HID = { 0x4D1E55B2, 0xF16F, 0x11CF, 0x88, 0xCB, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30 };
 
 static void register_win32_device_notification_event()
 {
-    enum { WM_DPICHANGED_ = 0x02e0 };
-
     wxWindow::MSWRegisterMessageHandler(WM_DEVICECHANGE, [](wxWindow *win, WXUINT /* nMsg */, WXWPARAM wParam, WXLPARAM lParam) {
         // Some messages are sent to top level windows by default, some messages are sent to only registered windows, and we explictely register on MainFrame only.
         auto main_frame = dynamic_cast<MainFrame*>(win);
@@ -323,6 +326,12 @@ void GUI_App::init_app_config()
 	}
 }
 
+void GUI_App::init_single_instance_checker(const std::string &name, const std::string &path)
+{
+    BOOST_LOG_TRIVIAL(debug) << "init wx instance checker " << name << " "<< path; 
+    m_single_instance_checker = std::make_unique<wxSingleInstanceChecker>(boost::nowide::widen(name), boost::nowide::widen(path));
+}
+
 bool GUI_App::OnInit()
 {
     try {
@@ -401,7 +410,9 @@ bool GUI_App::on_init_inner()
     }
 
 #ifdef WIN32
+#if !wxVERSION_EQUAL_OR_GREATER_THAN(3,1,3)
     register_win32_dpi_event();
+#endif // !wxVERSION_EQUAL_OR_GREATER_THAN
     register_win32_device_notification_event();
 #endif // WIN32
 
@@ -451,6 +462,10 @@ bool GUI_App::on_init_inner()
 				preset_updater->slic3r_update_notify();
 				preset_updater->sync(preset_bundle);
 				});
+#ifdef _WIN32
+			//sets window property to mainframe so other instances can indentify it
+			OtherInstanceMessageHandler::init_windows_properties(mainframe, m_instance_hash_int);
+#endif //WIN32
         }
     });
 
@@ -570,6 +585,11 @@ void GUI_App::set_label_clr_sys(const wxColour& clr) {
     app_config->save();
 }
 
+wxSize GUI_App::get_min_size() const
+{
+    return wxSize(76*m_em_unit, 49 * m_em_unit);
+}
+
 float GUI_App::toolbar_icon_scale(const bool is_limited/* = false*/) const
 {
 #ifdef __APPLE__
@@ -603,7 +623,7 @@ void GUI_App::set_auto_toolbar_icon_scale(float scale) const
     const float icon_sc = m_em_unit * 0.1f;
 #endif // __APPLE__
 
-    int int_val = std::min(int(scale / icon_sc * 100), 100);
+    long int_val = std::min(int(std::lround(scale / icon_sc * 100)), 100);
     std::string val = std::to_string(int_val);
 
     app_config->set("auto_toolbar_size", val);
@@ -1041,17 +1061,34 @@ void GUI_App::add_config_menu(wxMenuBar *menu)
             break;
         case ConfigMenuPreferences:
         {
+#if ENABLE_LAYOUT_NO_RESTART
+            bool app_layout_changed = false;
+#else
             bool recreate_app = false;
+#endif // ENABLE_LAYOUT_NO_RESTART
             {
                 // the dialog needs to be destroyed before the call to recreate_GUI()
                 // or sometimes the application crashes into wxDialogBase() destructor
                 // so we put it into an inner scope
                 PreferencesDialog dlg(mainframe);
                 dlg.ShowModal();
+#if ENABLE_LAYOUT_NO_RESTART
+                app_layout_changed = dlg.settings_layout_changed();
+#else
                 recreate_app = dlg.settings_layout_changed();
+#endif // ENABLE_LAYOUT_NO_RESTART
             }
+#if ENABLE_LAYOUT_NO_RESTART
+            if (app_layout_changed) {
+                mainframe->Hide();
+                mainframe->update_layout();
+                mainframe->select_tab(0);
+                mainframe->Show();
+            }
+#else
             if (recreate_app)
                 recreate_GUI(_L("Changing of the settings layout") + dots);
+#endif // ENABLE_LAYOUT_NO_RESTART
             break;
         }
         case ConfigMenuLanguage:
@@ -1368,7 +1405,9 @@ void GUI_App::window_pos_restore(wxTopLevelWindow* window, const std::string &na
         return;
     }
 
-    window->SetSize(metrics->get_rect());
+    const wxRect& rect = metrics->get_rect();
+    window->SetPosition(rect.GetPosition());
+    window->SetSize(rect.GetSize());
     window->Maximize(metrics->get_maximized());
 }
 

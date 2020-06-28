@@ -1,5 +1,6 @@
 #include "Print.hpp"
 #include "ToolOrdering.hpp"
+#include "Layer.hpp"
 
 // #define SLIC3R_DEBUG
 
@@ -15,7 +16,6 @@
 
 #include <libslic3r.h>
 
-#include "../GCodeWriter.hpp"
 
 namespace Slic3r {
 
@@ -355,7 +355,7 @@ void ToolOrdering::fill_wipe_tower_partitions(const PrintConfig &config, coordf_
         max_layer_height = std::min(max_layer_height, mlh);
     }
     // The Prusa3D Fast (0.35mm layer height) print profile sets a higher layer height than what is normally allowed
-    // by the nozzle. This is a hack and it works by increasing extrusion width.
+    // by the nozzle. This is a hack and it works by increasing extrusion width. See GH #3919.
     max_layer_height = std::max(max_layer_height, max_object_layer_height);
 
     for (size_t i = 0; i + 1 < m_layer_tools.size(); ++ i) {
@@ -400,47 +400,21 @@ void ToolOrdering::fill_wipe_tower_partitions(const PrintConfig &config, coordf_
     // and maybe other problems. We will therefore go through layer_tools and detect and fix this.
     // So, if there is a non-object layer starting with different extruder than the last one ended with (or containing more than one extruder),
     // we'll mark it with has_wipe tower.
-    assert(! m_layer_tools.empty() && m_layer_tools.front().has_wipe_tower);
-    if (! m_layer_tools.empty() && m_layer_tools.front().has_wipe_tower) {
-        for (size_t i = 0; i + 1 < m_layer_tools.size();) {
-            const LayerTools &lt = m_layer_tools[i];
-            assert(lt.has_wipe_tower);
-            assert(! lt.extruders.empty());
-            // Find the next layer with wipe tower or mark a layer as such.
-            size_t j = i + 1;
-            for (; j < m_layer_tools.size() && ! m_layer_tools[j].has_wipe_tower; ++ j) {
-                LayerTools &lt_next = m_layer_tools[j];
-                if (lt_next.extruders.empty()) {
-                    //FIXME Vojtech: Lukasi, proc?
-                    j = m_layer_tools.size();
-                    break;
-                }
-                if (lt_next.extruders.front() != lt.extruders.back() || lt_next.extruders.size() > 1) {
-                    // Support only layer, soluble layers? Otherwise the layer should have been already marked as having wipe tower.
-                    assert(lt_next.has_support && ! lt_next.has_object);
-                    lt_next.has_wipe_tower = true;
-                    break;
-                }
+    for (unsigned int i=0; i+1<m_layer_tools.size(); ++i) {
+        LayerTools& lt = m_layer_tools[i];
+        LayerTools& lt_next = m_layer_tools[i+1];
+        if (lt.extruders.empty() || lt_next.extruders.empty())
+            break;
+        if (!lt_next.has_wipe_tower && (lt_next.extruders.front() != lt.extruders.back() || lt_next.extruders.size() > 1))
+            lt_next.has_wipe_tower = true;
+        // We should also check that the next wipe tower layer is no further than max_layer_height:
+        unsigned int j = i+1;
+        double last_wipe_tower_print_z = lt_next.print_z;
+        while (++j < m_layer_tools.size()-1 && !m_layer_tools[j].has_wipe_tower)
+            if (m_layer_tools[j+1].print_z - last_wipe_tower_print_z > max_layer_height + EPSILON) {
+                m_layer_tools[j].has_wipe_tower = true;
+                last_wipe_tower_print_z = m_layer_tools[j].print_z;
             }
-            if (j == m_layer_tools.size())
-                // No wipe tower above layer i, therefore no need to add any wipe tower layer above i.
-                break;
-            // We should also check that the next wipe tower layer is no further than max_layer_height.
-            // This algorith may in theory create very thin wipe layer j if layer closely below j is marked as wipe tower.
-            // This may happen if printing with non-soluble break away supports.
-            // On the other side it should not hurt as there will be no wipe, just perimeter and sparse infill printed
-            // at that particular wipe tower layer without extruder change.
-            double last_wipe_tower_print_z = lt.print_z;
-            assert(m_layer_tools[j].has_wipe_tower);
-            for (size_t k = i + 1; k < j; ++k) {
-                assert(! m_layer_tools[k].has_wipe_tower);
-                if (m_layer_tools[k + 1].print_z - last_wipe_tower_print_z > max_layer_height + EPSILON) {
-                    m_layer_tools[k].has_wipe_tower = true;
-                    last_wipe_tower_print_z = m_layer_tools[k].print_z;
-                }
-            }
-            i = j;
-        }
     }
 
     // Calculate the wipe_tower_layer_height values.
@@ -518,7 +492,7 @@ void ToolOrdering::assign_custom_gcodes(const Print &print)
 		for (unsigned int i : lt.extruders)
 			extruder_printing_above[i] = true;
 		// Skip all custom G-codes above this layer and skip all extruder switches.
-		for (; custom_gcode_it != custom_gcode_per_print_z.gcodes.rend() && (custom_gcode_it->print_z > lt.print_z + EPSILON || custom_gcode_it->gcode == ToolChangeCode); ++ custom_gcode_it);
+		for (; custom_gcode_it != custom_gcode_per_print_z.gcodes.rend() && (custom_gcode_it->print_z > lt.print_z + EPSILON || custom_gcode_it->type == CustomGCode::ToolChange); ++ custom_gcode_it);
 		if (custom_gcode_it == custom_gcode_per_print_z.gcodes.rend())
 			// Custom G-codes were processed.
 			break;
@@ -530,8 +504,8 @@ void ToolOrdering::assign_custom_gcodes(const Print &print)
 			print_z_below = it_lt_below->print_z;
 		if (custom_gcode.print_z > print_z_below + 0.5 * EPSILON) {
 			// The custom G-code applies to the current layer.
-			bool color_change = custom_gcode.gcode == ColorChangeCode;
-			bool tool_change  = custom_gcode.gcode == ToolChangeCode;
+			bool color_change = custom_gcode.type == CustomGCode::ColorChange;
+			bool tool_change  = custom_gcode.type == CustomGCode::ToolChange;
 			bool pause_or_custom_gcode = ! color_change && ! tool_change;
 			bool apply_color_change = ! ignore_tool_and_color_changes &&
 				// If it is color change, it will actually be useful as the exturder above will print.

@@ -33,7 +33,7 @@ enum PrintHostType {
     htOctoPrint, htDuet, htFlashAir, htAstroBox
 };
 
-enum InfillPattern {
+enum InfillPattern : int {
     ipRectilinear, ipMonotonous, ipGrid, ipTriangles, ipStars, ipCubic, ipLine, ipConcentric, ipHoneycomb, ip3DHoneycomb,
     ipGyroid, ipHilbertCurve, ipArchimedeanChords, ipOctagramSpiral, ipCount,
 };
@@ -699,6 +699,9 @@ public:
     ConfigOptionBool                remaining_times;
     ConfigOptionBool                silent_mode;
     ConfigOptionFloat               extra_loading_move;
+    ConfigOptionString              color_change_gcode;
+    ConfigOptionString              pause_print_gcode;
+    ConfigOptionString              template_custom_gcode;
 
     std::string get_extrusion_axis() const
     {
@@ -772,6 +775,9 @@ protected:
         OPT_PTR(remaining_times);
         OPT_PTR(silent_mode);
         OPT_PTR(extra_loading_move);
+        OPT_PTR(color_change_gcode);
+        OPT_PTR(pause_print_gcode);
+        OPT_PTR(template_custom_gcode);
     }
 };
 

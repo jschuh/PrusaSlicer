@@ -33,10 +33,11 @@
 #include "Event.hpp"
 #include "wxExtensions.hpp"
 #include "ConfigManipulation.hpp"
+#include "Preset.hpp"
+#include "OptionsGroup.hpp"
 
 namespace Slic3r {
 namespace GUI {
-
 
 // Single Tab page containing a{ vsizer } of{ optgroups }
 // package Slic3r::GUI::Tab::Page;
@@ -49,17 +50,8 @@ class Page : public wxScrolledWindow
 	wxBoxSizer*		m_vsizer;
     bool            m_show = true;
 public:
-    Page(wxWindow* parent, const wxString& title, const int iconID, const std::vector<ScalableBitmap>& mode_bmp_cache) :
-			m_parent(parent),
-			m_title(title),
-			m_iconID(iconID),
-            m_mode_bitmap_cache(mode_bmp_cache)
-	{
-		Create(m_parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL);
-		m_vsizer = new wxBoxSizer(wxVERTICAL);
-        m_item_color = &wxGetApp().get_label_clr_default();
-		SetSizer(m_vsizer);
-	}
+    Page(wxWindow* parent, const wxString& title, const int iconID,
+         const std::vector<ScalableBitmap>& mode_bmp_cache);
 	~Page() {}
 
 	bool				m_is_modified_values{ false };
@@ -81,6 +73,7 @@ public:
 	void		reload_config();
     void        update_visibility(ConfigOptionMode mode);
     void        msw_rescale();
+    void        sys_color_changed();
 	Field*		get_field(const t_config_option_key& opt_key, int opt_index = -1) const;
 	bool		set_value(const t_config_option_key& opt_key, const boost::any& value);
 	ConfigOptionsGroupShp	new_optgroup(const wxString& title, int noncommon_label_width = -1);
@@ -318,6 +311,7 @@ public:
     void            update_mode();
     void            update_visibility();
     virtual void    msw_rescale();
+    virtual void	sys_color_changed();
 	Field*			get_field(const t_config_option_key& opt_key, int opt_index = -1) const;
     Field*          get_field(const t_config_option_key &opt_key, Page** selected_page, int opt_index = -1);
 	bool			set_value(const t_config_option_key& opt_key, const boost::any& value);
@@ -436,6 +430,7 @@ public:
 	void		on_preset_loaded() override;
 	void		init_options_list() override;
 	void		msw_rescale() override;
+	void		sys_color_changed() override;
     bool 		supports_printer_technology(const PrinterTechnology /* tech */) override { return true; }
 
 	wxSizer*	create_bed_shape_widget(wxWindow* parent);

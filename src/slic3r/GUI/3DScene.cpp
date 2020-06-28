@@ -1,6 +1,17 @@
 #include <GL/glew.h>
 
+#if ENABLE_SMOOTH_NORMALS
+#include <igl/per_face_normals.h>
+#include <igl/per_corner_normals.h>
+#include <igl/per_vertex_normals.h>
+#endif // ENABLE_SMOOTH_NORMALS
+
 #include "3DScene.hpp"
+#if ENABLE_ENVIRONMENT_MAP
+#include "GUI_App.hpp"
+#include "Plater.hpp"
+#include "AppConfig.hpp"
+#endif // ENABLE_ENVIRONMENT_MAP
 
 #include "libslic3r/ExtrusionEntity.hpp"
 #include "libslic3r/ExtrusionEntityCollection.hpp"
@@ -29,12 +40,19 @@
 #include <Eigen/Dense>
 
 #ifdef HAS_GLSAFE
-void glAssertRecentCallImpl(const char *file_name, unsigned int line, const char *function_name)
+void glAssertRecentCallImpl(const char* file_name, unsigned int line, const char* function_name)
 {
+#if defined(NDEBUG) && ENABLE_OPENGL_ERROR_LOGGING
+    // In release mode, if OpenGL debugging was forced by ENABLE_OPENGL_ERROR_LOGGING, only show
+    // OpenGL errors if sufficiently high loglevel.
+    if (Slic3r::get_logging_level() < 5)
+        return;
+#endif // ENABLE_OPENGL_ERROR_LOGGING
+
     GLenum err = glGetError();
     if (err == GL_NO_ERROR)
         return;
-    const char *sErr = 0;
+    const char* sErr = 0;
     switch (err) {
     case GL_INVALID_ENUM:       sErr = "Invalid Enum";      break;
     case GL_INVALID_VALUE:      sErr = "Invalid Value";     break;
@@ -45,30 +63,114 @@ void glAssertRecentCallImpl(const char *file_name, unsigned int line, const char
     case GL_OUT_OF_MEMORY:      sErr = "Out Of Memory";     break;
     default:                    sErr = "Unknown";           break;
     }
-	BOOST_LOG_TRIVIAL(error) << "OpenGL error in " << file_name << ":" << line << ", function " << function_name << "() : " << (int)err << " - " << sErr;
+    BOOST_LOG_TRIVIAL(error) << "OpenGL error in " << file_name << ":" << line << ", function " << function_name << "() : " << (int)err << " - " << sErr;
     assert(false);
 }
-#endif
+#endif // HAS_GLSAFE
 
 namespace Slic3r {
 
-void GLIndexedVertexArray::load_mesh_full_shading(const TriangleMesh &mesh)
+#if ENABLE_SMOOTH_NORMALS
+static void smooth_normals_corner(TriangleMesh& mesh, std::vector<stl_normal>& normals)
+{
+    mesh.repair();
+
+    using MapMatrixXfUnaligned = Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor | Eigen::DontAlign>>;
+    using MapMatrixXiUnaligned = Eigen::Map<const Eigen::Matrix<int, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor | Eigen::DontAlign>>;
+
+    std::vector<stl_normal> face_normals(mesh.stl.stats.number_of_facets);
+    for (uint32_t i = 0; i < mesh.stl.stats.number_of_facets; ++i) {
+        face_normals[i] = mesh.stl.facet_start[i].normal;
+    }
+
+    Eigen::MatrixXd vertices = MapMatrixXfUnaligned(mesh.its.vertices.front().data(),
+        Eigen::Index(mesh.its.vertices.size()), 3).cast<double>();
+    Eigen::MatrixXi indices = MapMatrixXiUnaligned(mesh.its.indices.front().data(),
+        Eigen::Index(mesh.its.indices.size()), 3);
+    Eigen::MatrixXd in_normals = MapMatrixXfUnaligned(face_normals.front().data(),
+        Eigen::Index(face_normals.size()), 3).cast<double>();
+    Eigen::MatrixXd out_normals;
+
+    igl::per_corner_normals(vertices, indices, in_normals, 1.0, out_normals);
+
+    normals = std::vector<stl_normal>(mesh.its.vertices.size());
+    for (size_t i = 0; i < mesh.its.indices.size(); ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            normals[mesh.its.indices[i][j]] = out_normals.row(i * 3 + j).cast<float>();
+        }
+    }
+}
+
+static void smooth_normals_vertex(TriangleMesh& mesh, std::vector<stl_normal>& normals)
+{
+    mesh.repair();
+
+    using MapMatrixXfUnaligned = Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor | Eigen::DontAlign>>;
+    using MapMatrixXiUnaligned = Eigen::Map<const Eigen::Matrix<int, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor | Eigen::DontAlign>>;
+
+    Eigen::MatrixXd vertices = MapMatrixXfUnaligned(mesh.its.vertices.front().data(),
+        Eigen::Index(mesh.its.vertices.size()), 3).cast<double>();
+    Eigen::MatrixXi indices = MapMatrixXiUnaligned(mesh.its.indices.front().data(),
+        Eigen::Index(mesh.its.indices.size()), 3);
+    Eigen::MatrixXd out_normals;
+
+//    igl::per_vertex_normals(vertices, indices, igl::PER_VERTEX_NORMALS_WEIGHTING_TYPE_UNIFORM, out_normals);
+//    igl::per_vertex_normals(vertices, indices, igl::PER_VERTEX_NORMALS_WEIGHTING_TYPE_AREA, out_normals);
+    igl::per_vertex_normals(vertices, indices, igl::PER_VERTEX_NORMALS_WEIGHTING_TYPE_ANGLE, out_normals);
+//    igl::per_vertex_normals(vertices, indices, igl::PER_VERTEX_NORMALS_WEIGHTING_TYPE_DEFAULT, out_normals);
+
+    normals = std::vector<stl_normal>(mesh.its.vertices.size());
+    for (size_t i = 0; i < static_cast<size_t>(out_normals.rows()); ++i) {
+        normals[i] = out_normals.row(i).cast<float>();
+    }
+}
+#endif // ENABLE_SMOOTH_NORMALS
+
+#if ENABLE_SMOOTH_NORMALS
+void GLIndexedVertexArray::load_mesh_full_shading(const TriangleMesh& mesh, bool smooth_normals)
+#else
+void GLIndexedVertexArray::load_mesh_full_shading(const TriangleMesh& mesh)
+#endif // ENABLE_SMOOTH_NORMALS
 {
     assert(triangle_indices.empty() && vertices_and_normals_interleaved_size == 0);
     assert(quad_indices.empty() && triangle_indices_size == 0);
     assert(vertices_and_normals_interleaved.size() % 6 == 0 && quad_indices_size == vertices_and_normals_interleaved.size());
 
-    this->vertices_and_normals_interleaved.reserve(this->vertices_and_normals_interleaved.size() + 3 * 3 * 2 * mesh.facets_count());
+#if ENABLE_SMOOTH_NORMALS
+    if (smooth_normals) {
+        TriangleMesh new_mesh(mesh);
+        std::vector<stl_normal> normals;
+        smooth_normals_corner(new_mesh, normals);
+//        smooth_normals_vertex(new_mesh, normals);
 
-    unsigned int vertices_count = 0;
-    for (int i = 0; i < (int)mesh.stl.stats.number_of_facets; ++i) {
-        const stl_facet &facet = mesh.stl.facet_start[i];
-        for (int j = 0; j < 3; ++j)
-            this->push_geometry(facet.vertex[j](0), facet.vertex[j](1), facet.vertex[j](2), facet.normal(0), facet.normal(1), facet.normal(2));
+        this->vertices_and_normals_interleaved.reserve(this->vertices_and_normals_interleaved.size() + 3 * 2 * new_mesh.its.vertices.size());
+        for (size_t i = 0; i < new_mesh.its.vertices.size(); ++i) {
+            const stl_vertex& v = new_mesh.its.vertices[i];
+            const stl_normal& n = normals[i];
+            this->push_geometry(v(0), v(1), v(2), n(0), n(1), n(2));
+        }
 
-        this->push_triangle(vertices_count, vertices_count + 1, vertices_count + 2);
-        vertices_count += 3;
+        for (size_t i = 0; i < new_mesh.its.indices.size(); ++i) {
+            const stl_triangle_vertex_indices& idx = new_mesh.its.indices[i];
+            this->push_triangle(idx(0), idx(1), idx(2));
+        }
     }
+    else {
+#endif // ENABLE_SMOOTH_NORMALS
+        this->vertices_and_normals_interleaved.reserve(this->vertices_and_normals_interleaved.size() + 3 * 3 * 2 * mesh.facets_count());
+
+        unsigned int vertices_count = 0;
+        for (int i = 0; i < (int)mesh.stl.stats.number_of_facets; ++i) {
+            const stl_facet& facet = mesh.stl.facet_start[i];
+            for (int j = 0; j < 3; ++j)
+                this->push_geometry(facet.vertex[j](0), facet.vertex[j](1), facet.vertex[j](2), facet.normal(0), facet.normal(1), facet.normal(2));
+
+            this->push_triangle(vertices_count, vertices_count + 1, vertices_count + 2);
+            vertices_count += 3;
+        }
+#if ENABLE_SMOOTH_NORMALS
+    }
+#endif // ENABLE_SMOOTH_NORMALS
 }
 
 void GLIndexedVertexArray::finalize_geometry(bool opengl_initialized)
@@ -457,7 +559,11 @@ int GLVolumeCollection::load_object_volume(
     this->volumes.emplace_back(new GLVolume(color));
     GLVolume& v = *this->volumes.back();
     v.set_color_from_model_volume(model_volume);
+#if ENABLE_SMOOTH_NORMALS
+    v.indexed_vertex_array.load_mesh(mesh, true);
+#else
     v.indexed_vertex_array.load_mesh(mesh);
+#endif // ENABLE_SMOOTH_NORMALS
     v.indexed_vertex_array.finalize_geometry(opengl_initialized);
     v.composite_id = GLVolume::CompositeID(obj_idx, volume_idx, instance_idx);
     if (model_volume->is_model_part())
@@ -499,8 +605,12 @@ void GLVolumeCollection::load_object_auxiliary(
         const ModelInstance& model_instance = *print_object->model_object()->instances[instance_idx.first];
         this->volumes.emplace_back(new GLVolume((milestone == slaposPad) ? GLVolume::SLA_PAD_COLOR : GLVolume::SLA_SUPPORT_COLOR));
         GLVolume& v = *this->volumes.back();
+#if ENABLE_SMOOTH_NORMALS
+        v.indexed_vertex_array.load_mesh(mesh, true);
+#else
         v.indexed_vertex_array.load_mesh(mesh);
-	    v.indexed_vertex_array.finalize_geometry(opengl_initialized);
+#endif // ENABLE_SMOOTH_NORMALS
+        v.indexed_vertex_array.finalize_geometry(opengl_initialized);
         v.composite_id = GLVolume::CompositeID(obj_idx, -int(milestone), (int)instance_idx.first);
         v.geometry_id = std::pair<size_t, size_t>(timestamp, model_instance.id().id);
         // Create a copy of the convex hull mesh for each instance. Use a move operator on the last instance.
@@ -663,6 +773,10 @@ void GLVolumeCollection::render(GLVolumeCollection::ERenderType type, bool disab
     GLint slope_normal_matrix_id = (current_program_id > 0) ? ::glGetUniformLocation(current_program_id, "slope.volume_world_normal_matrix") : -1;
     GLint slope_z_range_id = (current_program_id > 0) ? ::glGetUniformLocation(current_program_id, "slope.z_range") : -1;
 #endif // ENABLE_SLOPE_RENDERING
+
+#if ENABLE_ENVIRONMENT_MAP
+    GLint use_environment_tex_id = (current_program_id > 0) ? ::glGetUniformLocation(current_program_id, "use_environment_tex") : -1;
+#endif // ENABLE_ENVIRONMENT_MAP
     glcheck();
 
     if (print_box_min_id != -1)
@@ -681,6 +795,18 @@ void GLVolumeCollection::render(GLVolumeCollection::ERenderType type, bool disab
     if (slope_z_range_id != -1)
         glsafe(::glUniform2fv(slope_z_range_id, 1, (const GLfloat*)m_slope.z_range.data()));
 #endif // ENABLE_SLOPE_RENDERING
+
+#if ENABLE_ENVIRONMENT_MAP
+    unsigned int environment_texture_id = GUI::wxGetApp().plater()->get_environment_texture_id();
+    bool use_environment_texture = current_program_id > 0 && environment_texture_id > 0 && GUI::wxGetApp().app_config->get("use_environment_map") == "1";
+
+    if (use_environment_tex_id != -1)
+    {
+        glsafe(::glUniform1i(use_environment_tex_id, use_environment_texture ? 1 : 0));
+        if (use_environment_texture)
+            glsafe(::glBindTexture(GL_TEXTURE_2D, environment_texture_id));
+    }
+#endif // ENABLE_ENVIRONMENT_MAP
 
     GLVolumeWithIdAndZList to_render = volumes_to_render(this->volumes, type, view_matrix, filter_func);
     for (GLVolumeWithIdAndZ& volume : to_render) {
@@ -712,6 +838,11 @@ void GLVolumeCollection::render(GLVolumeCollection::ERenderType type, bool disab
 #endif // ENABLE_SLOPE_RENDERING
     }
 
+#if ENABLE_ENVIRONMENT_MAP
+    if (use_environment_tex_id != -1 && use_environment_texture)
+        glsafe(::glBindTexture(GL_TEXTURE_2D, 0));
+#endif // ENABLE_ENVIRONMENT_MAP
+
     glsafe(::glBindBuffer(GL_ARRAY_BUFFER, 0));
     glsafe(::glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
 
@@ -724,7 +855,7 @@ void GLVolumeCollection::render(GLVolumeCollection::ERenderType type, bool disab
     glsafe(::glDisable(GL_BLEND));
 }
 
-bool GLVolumeCollection::check_outside_state(const DynamicPrintConfig* config, ModelInstance::EPrintVolumeState* out_state)
+bool GLVolumeCollection::check_outside_state(const DynamicPrintConfig* config, ModelInstanceEPrintVolumeState* out_state)
 {
     if (config == nullptr)
         return false;
@@ -738,7 +869,7 @@ bool GLVolumeCollection::check_outside_state(const DynamicPrintConfig* config, M
     // Allow the objects to protrude below the print bed
     print_volume.min(2) = -1e10;
 
-    ModelInstance::EPrintVolumeState state = ModelInstance::PVS_Inside;
+    ModelInstanceEPrintVolumeState state = ModelInstancePVS_Inside;
 
     bool contained_min_one = false;
 
@@ -757,11 +888,11 @@ bool GLVolumeCollection::check_outside_state(const DynamicPrintConfig* config, M
         if (contained)
             contained_min_one = true;
 
-        if ((state == ModelInstance::PVS_Inside) && volume->is_outside)
-            state = ModelInstance::PVS_Fully_Outside;
+        if ((state == ModelInstancePVS_Inside) && volume->is_outside)
+            state = ModelInstancePVS_Fully_Outside;
 
-        if ((state == ModelInstance::PVS_Fully_Outside) && volume->is_outside && print_volume.intersects(bb))
-            state = ModelInstance::PVS_Partly_Outside;
+        if ((state == ModelInstancePVS_Fully_Outside) && volume->is_outside && print_volume.intersects(bb))
+            state = ModelInstancePVS_Partly_Outside;
     }
 
     if (out_state != nullptr)

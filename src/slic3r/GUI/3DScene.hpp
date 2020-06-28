@@ -6,24 +6,24 @@
 #include "libslic3r/Line.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/Utils.hpp"
-#include "libslic3r/Model.hpp"
+#include "libslic3r/Geometry.hpp"
 
 #include <functional>
 
-#ifndef NDEBUG
-#define HAS_GLSAFE
+#if ENABLE_OPENGL_ERROR_LOGGING || ! defined(NDEBUG)
+    #define HAS_GLSAFE
 #endif
 
 #ifdef HAS_GLSAFE
-extern void glAssertRecentCallImpl(const char *file_name, unsigned int line, const char *function_name);
-inline void glAssertRecentCall() { glAssertRecentCallImpl(__FILE__, __LINE__, __FUNCTION__); }
-#define glsafe(cmd) do { cmd; glAssertRecentCallImpl(__FILE__, __LINE__, __FUNCTION__); } while (false)
-#define glcheck() do { glAssertRecentCallImpl(__FILE__, __LINE__, __FUNCTION__); } while (false)
-#else
-inline void glAssertRecentCall() { }
-#define glsafe(cmd) cmd
-#define glcheck()
-#endif
+    extern void glAssertRecentCallImpl(const char *file_name, unsigned int line, const char *function_name);
+    inline void glAssertRecentCall() { glAssertRecentCallImpl(__FILE__, __LINE__, __FUNCTION__); }
+    #define glsafe(cmd) do { cmd; glAssertRecentCallImpl(__FILE__, __LINE__, __FUNCTION__); } while (false)
+    #define glcheck() do { glAssertRecentCallImpl(__FILE__, __LINE__, __FUNCTION__); } while (false)
+#else // HAS_GLSAFE
+    inline void glAssertRecentCall() { }
+    #define glsafe(cmd) cmd
+    #define glcheck()
+#endif // HAS_GLSAFE
 
 namespace Slic3r {
 namespace GUI {
@@ -40,6 +40,9 @@ class ExtrusionMultiPath;
 class ExtrusionLoop;
 class ExtrusionEntity;
 class ExtrusionEntityCollection;
+class ModelObject;
+class ModelVolume;
+enum ModelInstanceEPrintVolumeState : unsigned char;
 
 // A container for interleaved arrays of 3D vertices and normals,
 // possibly indexed by triangles and / or quads.
@@ -122,8 +125,13 @@ public:
     unsigned int       triangle_indices_VBO_id{ 0 };
     unsigned int       quad_indices_VBO_id{ 0 };
 
-    void load_mesh_full_shading(const TriangleMesh &mesh);
+#if ENABLE_SMOOTH_NORMALS
+    void load_mesh_full_shading(const TriangleMesh& mesh, bool smooth_normals = false);
+    void load_mesh(const TriangleMesh& mesh, bool smooth_normals = false) { this->load_mesh_full_shading(mesh, smooth_normals); }
+#else
+    void load_mesh_full_shading(const TriangleMesh& mesh);
     void load_mesh(const TriangleMesh& mesh) { this->load_mesh_full_shading(mesh); }
+#endif // ENABLE_SMOOTH_NORMALS
 
     inline bool has_VBOs() const { return vertices_and_normals_interleaved_VBO_id != 0; }
 
@@ -578,7 +586,7 @@ public:
 
     // returns true if all the volumes are completely contained in the print volume
     // returns the containment state in the given out_state, if non-null
-    bool check_outside_state(const DynamicPrintConfig* config, ModelInstance::EPrintVolumeState* out_state);
+    bool check_outside_state(const DynamicPrintConfig* config, ModelInstanceEPrintVolumeState* out_state);
     void reset_outside_state();
 
     void update_colors_by_extruder(const DynamicPrintConfig* config);

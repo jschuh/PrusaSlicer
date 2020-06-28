@@ -53,6 +53,8 @@
     #include "slic3r/GUI/3DScene.hpp"
     #include "slic3r/GUI/InstanceCheck.hpp" 
     #include "slic3r/GUI/AppConfig.hpp" 
+    #include "slic3r/GUI/MainFrame.hpp"
+    #include "slic3r/GUI/Plater.hpp"
 #endif /* SLIC3R_GUI */
 
 using namespace Slic3r;
@@ -531,9 +533,6 @@ int CLI::run(int argc, char **argv)
 			//TODO: do we have delete gui and other stuff?
 			return -1;
 		}
-		
-		//gui->app_config = app_config;
-		//app_config = nullptr;
 		
 //		gui->autosave = m_config.opt_string("autosave");
         GUI::GUI_App::SetInstance(gui);

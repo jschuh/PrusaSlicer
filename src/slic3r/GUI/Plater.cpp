@@ -771,7 +771,9 @@ Sidebar::Sidebar(Plater *parent)
     p->scrolled->SetScrollbars(0, 100, 1, 2);
 
     SetFont(wxGetApp().normal_font());
+#ifndef __APPLE__
     SetBackgroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW));
+#endif
 
     // Sizer in the scrolled area
     auto *scrolled_sizer = new wxBoxSizer(wxVERTICAL);
@@ -1090,6 +1092,34 @@ void Sidebar::msw_rescale()
     p->scrolled->Layout();
 }
 
+void Sidebar::sys_color_changed()
+{
+    // Update preset comboboxes in respect to the system color ...
+    // combo->msw_rescale() updates icon on button, so use it
+    for (PresetComboBox* combo : std::vector<PresetComboBox*>{  p->combo_print,
+                                                                p->combo_sla_print,
+                                                                p->combo_sla_material,
+                                                                p->combo_printer })
+        combo->msw_rescale();
+    for (PresetComboBox* combo : p->combos_filament)
+        combo->msw_rescale();
+
+    // ... then refill them and set min size to correct layout of the sidebar
+    update_all_preset_comboboxes();
+
+    p->object_list->sys_color_changed();
+    p->object_manipulation->sys_color_changed();
+//    p->object_settings->msw_rescale();
+    p->object_layers->sys_color_changed();
+
+    // btn...->msw_rescale() updates icon on button, so use it
+    p->btn_send_gcode->msw_rescale();
+    p->btn_remove_device->msw_rescale();
+    p->btn_export_gcode_removable->msw_rescale();
+
+    p->scrolled->Layout();
+}
+
 void Sidebar::search()
 {
     p->searcher.search();
@@ -1168,12 +1198,15 @@ void Sidebar::show_info_sizer()
         return;
     }
 
+    bool imperial_units = wxGetApp().app_config->get("use_inches") == "1";
+    double koef = imperial_units ? ObjectManipulation::mm_to_in : 1.0f;
+
     auto size = model_object->bounding_box().size();
-    p->object_info->info_size->SetLabel(wxString::Format("%.2f x %.2f x %.2f",size(0), size(1), size(2)));
+    p->object_info->info_size->SetLabel(wxString::Format("%.2f x %.2f x %.2f",size(0)*koef, size(1)*koef, size(2)*koef));
     p->object_info->info_materials->SetLabel(wxString::Format("%d", static_cast<int>(model_object->materials_count())));
 
     const auto& stats = model_object->get_object_stl_stats();//model_object->volumes.front()->mesh.stl.stats;
-    p->object_info->info_volume->SetLabel(wxString::Format("%.2f", stats.volume));
+    p->object_info->info_volume->SetLabel(wxString::Format("%.2f", stats.volume*pow(koef,3)));
     p->object_info->info_facets->SetLabel(wxString::Format(_L("%d (%d shells)"), static_cast<int>(model_object->facets_count()), stats.number_of_parts));
 
     int errors = stats.degenerate_facets + stats.edges_fixed + stats.facets_removed +
@@ -1251,18 +1284,24 @@ void Sidebar::update_sliced_info_sizer()
             const PrintStatistics& ps = p->plater->fff_print().print_statistics();
             const bool is_wipe_tower = ps.total_wipe_tower_filament > 0;
 
-            wxString new_label = _L("Used Filament (m)");
+            bool imperial_units = wxGetApp().app_config->get("use_inches") == "1";
+            double koef = imperial_units ? ObjectManipulation::in_to_mm : 1000.0;
+
+            wxString new_label = imperial_units ? _L("Used Filament (in)") : _L("Used Filament (m)");
             if (is_wipe_tower)
                 new_label += format_wxstr(":\n    - %1%\n    - %2%", _L("objects"), _L("wipe tower"));
 
             wxString info_text = is_wipe_tower ?
-                                wxString::Format("%.2f \n%.2f \n%.2f", ps.total_used_filament / 1000,
-                                                (ps.total_used_filament - ps.total_wipe_tower_filament) / 1000,
-                                                ps.total_wipe_tower_filament / 1000) :
-                                wxString::Format("%.2f", ps.total_used_filament / 1000);
+                                wxString::Format("%.2f \n%.2f \n%.2f", ps.total_used_filament / /*1000*/koef,
+                                                (ps.total_used_filament - ps.total_wipe_tower_filament) / /*1000*/koef,
+                                                ps.total_wipe_tower_filament / /*1000*/koef) :
+                                wxString::Format("%.2f", ps.total_used_filament / /*1000*/koef);
             p->sliced_info->SetTextAndShow(siFilament_m,    info_text,      new_label);
 
-            p->sliced_info->SetTextAndShow(siFilament_mm3,  wxString::Format("%.2f", ps.total_extruded_volume));
+            koef = imperial_units ? pow(ObjectManipulation::mm_to_in, 3) : 1.0f;
+            new_label = imperial_units ? _L("Used Filament (in³)") : _L("Used Filament (mm³)");
+            info_text = wxString::Format("%.2f", imperial_units ? ps.total_extruded_volume * koef : ps.total_extruded_volume);
+            p->sliced_info->SetTextAndShow(siFilament_mm3,  info_text,      new_label);
             p->sliced_info->SetTextAndShow(siFilament_g,    ps.total_weight == 0.0 ? "N/A" : wxString::Format("%.2f", ps.total_weight));
 
             new_label = _L("Cost");
@@ -1285,22 +1324,22 @@ void Sidebar::update_sliced_info_sizer()
                 wxString str_color = _L("Color");
                 wxString str_pause = _L("Pause");
 
-                auto fill_labels = [str_color, str_pause](const std::vector<std::pair<CustomGcodeType, std::string>>& times, 
+                auto fill_labels = [str_color, str_pause](const std::vector<std::pair<CustomGCode::Type, std::string>>& times, 
                                                           wxString& new_label, wxString& info_text)
                 {
                     int color_change_count = 0;
                     for (auto time : times)
-                        if (time.first == cgtColorChange)
+                        if (time.first == CustomGCode::ColorChange)
                             color_change_count++;
 
                     for (int i = (int)times.size() - 1; i >= 0; --i)
                     {
-                        if (i == 0 || times[i - 1].first == cgtPausePrint)
+                        if (i == 0 || times[i - 1].first == CustomGCode::PausePrint)
                             new_label += format_wxstr("\n      - %1%%2%", str_color + " ", color_change_count);
-                        else if (times[i - 1].first == cgtColorChange)
+                        else if (times[i - 1].first == CustomGCode::ColorChange)
                             new_label += format_wxstr("\n      - %1%%2%", str_color + " ", color_change_count--);
 
-                        if (i != (int)times.size() - 1 && times[i].first == cgtPausePrint)
+                        if (i != (int)times.size() - 1 && times[i].first == CustomGCode::PausePrint)
                             new_label += format_wxstr(" -> %1%", str_pause);
 
                         info_text += format_wxstr("\n%1%", times[i].second);
@@ -1411,6 +1450,13 @@ void Sidebar::collapse(bool collapse)
     wxGetApp().app_config->set("collapsed_sidebar", collapse ? "1" : "0");
 }
 
+
+void Sidebar::update_ui_from_settings()
+{
+    p->object_manipulation->update_ui_from_settings();
+    show_info_sizer();
+    update_sliced_info_sizer();
+}
 
 std::vector<PresetComboBox*>& Sidebar::combos_filament()
 {
@@ -1537,9 +1583,13 @@ struct Plater::priv
     Sidebar *sidebar;
     Bed3D bed;
     Camera camera;
+#if ENABLE_ENVIRONMENT_MAP
+    GLTexture environment_texture;
+#endif // ENABLE_ENVIRONMENT_MAP
     Mouse3DController mouse3d_controller;
     View3D* view3D;
     GLToolbar view_toolbar;
+    GLToolbar collapse_toolbar;
     Preview *preview;
 
     BackgroundSlicingProcess    background_process;
@@ -1634,6 +1684,7 @@ struct Plater::priv
     void reset_canvas_volumes();
 
     bool init_view_toolbar();
+    bool init_collapse_toolbar();
 
     void reset_all_gizmos();
     void update_ui_from_settings();
@@ -1643,7 +1694,7 @@ struct Plater::priv
     BoundingBoxf bed_shape_bb() const;
     BoundingBox scaled_bed_shape_bb() const;
 
-    std::vector<size_t> load_files(const std::vector<fs::path>& input_files, bool load_model, bool load_config);
+    std::vector<size_t> load_files(const std::vector<fs::path>& input_files, bool load_model, bool load_config, bool used_inches = false);
     std::vector<size_t> load_model_objects(const ModelObjectPtrs &model_objects);
     wxString get_export_file(GUI::FileType file_type);
 
@@ -1829,6 +1880,7 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
     , m_ui_jobs(this)
     , delayed_scene_refresh(false)
     , view_toolbar(GLToolbar::Radio, "View")
+    , collapse_toolbar(GLToolbar::Normal, "Collapse")
     , m_project_filename(wxEmptyString)
 {
     this->q->SetFont(Slic3r::GUI::wxGetApp().normal_font());
@@ -2014,27 +2066,27 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
     this->q->Bind(EVT_INSTANCE_GO_TO_FRONT, [this](InstanceGoToFrontEvent &) { 
         BOOST_LOG_TRIVIAL(debug) << "prusaslicer window going forward";
 		//this code maximize app window on Fedora
-		wxGetApp().mainframe->Iconize(false);
-        if (wxGetApp().mainframe->IsMaximized())
-            wxGetApp().mainframe->Maximize(true);
-        else
-            wxGetApp().mainframe->Maximize(false);
-		//this code (without code above) maximize window on Ubuntu
-		wxGetApp().mainframe->Restore();  
-		wxGetApp().GetTopWindow()->SetFocus();  // focus on my window
-		wxGetApp().GetTopWindow()->Raise();  // bring window to front
-		wxGetApp().GetTopWindow()->Show(true); // show the window
+		{
+			wxGetApp().mainframe->Iconize(false);
+			if (wxGetApp().mainframe->IsMaximized())
+				wxGetApp().mainframe->Maximize(true);
+			else
+				wxGetApp().mainframe->Maximize(false);
+		}
+		//this code maximize window on Ubuntu
+		{
+			wxGetApp().mainframe->Restore();  
+			wxGetApp().GetTopWindow()->SetFocus();  // focus on my window
+			wxGetApp().GetTopWindow()->Raise();  // bring window to front
+			wxGetApp().GetTopWindow()->Show(true); // show the window
+		}
 
     });
 	wxGetApp().other_instance_message_handler()->init(this->q);
 
-
     // collapse sidebar according to saved value
     bool is_collapsed = wxGetApp().app_config->get("collapsed_sidebar") == "1";
     sidebar->collapse(is_collapsed);
-    // Update an enable of the collapse_toolbar: if sidebar is collapsed, then collapse_toolbar should be visible
-    if (is_collapsed)
-        wxGetApp().app_config->set("show_collapse_button", "1");
 }
 
 Plater::priv::~priv()
@@ -2107,6 +2159,8 @@ void Plater::priv::update_ui_from_settings()
 
     view3D->get_canvas3d()->update_ui_from_settings();
     preview->get_canvas3d()->update_ui_from_settings();
+
+    sidebar->update_ui_from_settings();
 }
 
 // Called after the print technology was changed.
@@ -2139,7 +2193,7 @@ BoundingBox Plater::priv::scaled_bed_shape_bb() const
     return bed_shape.bounding_box();
 }
 
-std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_files, bool load_model, bool load_config)
+std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_files, bool load_model, bool load_config, bool imperial_units/* = false*/)
 {
     if (input_files.empty()) { return std::vector<size_t>(); }
 
@@ -2235,6 +2289,23 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
         if (load_model)
         {
             // The model should now be initialized
+
+            auto convert_from_imperial_units = [](Model& model) {
+                model.convert_from_imperial_units();
+                wxGetApp().app_config->set("use_inches", "1");
+                wxGetApp().sidebar().update_ui_from_settings();
+            };
+
+            if (imperial_units)
+                convert_from_imperial_units(model);
+            else if (model.looks_like_imperial_units()) {
+                wxMessageDialog msg_dlg(q, format_wxstr(_L(
+                    "Some object(s) in file %s looks like saved in inches.\n"
+                    "Should I consider them as a saved in inches and convert them?"), from_path(filename)) + "\n",
+                    _L("Saved in inches object detected"), wxICON_WARNING | wxYES | wxNO);
+                if (msg_dlg.ShowModal() == wxID_YES)
+                    convert_from_imperial_units(model);
+            }
 
             if (! is_project_file) {
                 if (model.looks_like_multipart_object()) {
@@ -2557,7 +2628,7 @@ void Plater::priv::object_list_changed()
 {
     const bool export_in_progress = this->background_process.is_export_scheduled(); // || ! send_gcode_file.empty());
     // XXX: is this right?
-    const bool model_fits = view3D->check_volumes_outside_state() == ModelInstance::PVS_Inside;
+    const bool model_fits = view3D->check_volumes_outside_state() == ModelInstancePVS_Inside;
 
     sidebar->enable_buttons(!model.objects.empty() && !export_in_progress && model_fits);
 }
@@ -3249,7 +3320,7 @@ void Plater::priv::set_current_panel(wxPanel* panel)
         // see: Plater::priv::object_list_changed()
         // FIXME: it may be better to have a single function making this check and let it be called wherever needed
         bool export_in_progress = this->background_process.is_export_scheduled();
-        bool model_fits = view3D->check_volumes_outside_state() != ModelInstance::PVS_Partly_Outside;
+        bool model_fits = view3D->check_volumes_outside_state() != ModelInstancePVS_Partly_Outside;
         if (!model.objects.empty() && !export_in_progress && model_fits)
             this->q->reslice();
         // keeps current gcode preview, if any
@@ -3685,6 +3756,9 @@ bool Plater::priv::init_common_menu(wxMenu* menu, const bool is_part/* = false*/
 
         menu->AppendSeparator();
 
+        // "Scale to print volume" makes a sense just for whole object
+        sidebar->obj_list()->append_menu_item_scale_selection_to_fit_print_volume(menu);
+
         q->Bind(wxEVT_UPDATE_UI, [this](wxUpdateUIEvent& evt) {
             const Selection& selection = get_selection();
             int instance_idx = selection.get_instance_idx();
@@ -3697,9 +3771,8 @@ bool Plater::priv::init_common_menu(wxMenu* menu, const bool is_part/* = false*/
             }, menu_item_printable->GetId());
     }
 
+    sidebar->obj_list()->append_menu_items_convert_unit(menu);
     sidebar->obj_list()->append_menu_item_fix_through_netfabb(menu);
-
-    sidebar->obj_list()->append_menu_item_scale_selection_to_fit_print_volume(menu);
 
     wxMenu* mirror_menu = new wxMenu();
     if (mirror_menu == nullptr)
@@ -3845,6 +3918,51 @@ bool Plater::priv::init_view_toolbar()
 
     view_toolbar.select_item("3D");
     view_toolbar.set_enabled(true);
+
+    return true;
+}
+
+bool Plater::priv::init_collapse_toolbar()
+{
+    if (collapse_toolbar.get_items_count() > 0)
+        // already initialized
+        return true;
+
+    BackgroundTexture::Metadata background_data;
+    background_data.filename = "toolbar_background.png";
+    background_data.left = 16;
+    background_data.top = 16;
+    background_data.right = 16;
+    background_data.bottom = 16;
+
+    if (!collapse_toolbar.init(background_data))
+        return false;
+
+    collapse_toolbar.set_layout_type(GLToolbar::Layout::Vertical);
+    collapse_toolbar.set_horizontal_orientation(GLToolbar::Layout::HO_Right);
+    collapse_toolbar.set_vertical_orientation(GLToolbar::Layout::VO_Top);
+    collapse_toolbar.set_border(5.0f);
+    collapse_toolbar.set_separator_size(5);
+    collapse_toolbar.set_gap_size(2);
+
+    GLToolbarItem::Data item;
+
+    item.name = "collapse_sidebar";
+    item.icon_filename = "collapse.svg";
+    item.tooltip = wxGetApp().plater()->is_sidebar_collapsed() ? _utf8(L("Expand right panel")) : _utf8(L("Collapse right panel"));
+    item.sprite_id = 0;
+    item.left.action_callback = [this, item]() {
+        std::string new_tooltip = wxGetApp().plater()->is_sidebar_collapsed() ?
+            _utf8(L("Collapse right panel")) : _utf8(L("Expand right panel"));
+
+        int id = collapse_toolbar.get_item_id("collapse_sidebar");
+        collapse_toolbar.set_tooltip(id, new_tooltip);
+
+        wxGetApp().plater()->collapse_sidebar(!wxGetApp().plater()->is_sidebar_collapsed());
+    };
+
+    if (!collapse_toolbar.add_item(item))
+        return false;
 
     return true;
 }
@@ -4274,7 +4392,7 @@ void Sidebar::set_btn_label(const ActionButtonType btn_type, const wxString& lab
 // Plater / Public
 
 Plater::Plater(wxWindow *parent, MainFrame *main_frame)
-    : wxPanel(parent)
+    : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxGetApp().get_min_size())
     , p(new priv(this, main_frame))
 {
     // Initialization performed in the private c-tor
@@ -4326,7 +4444,7 @@ void Plater::load_project(const wxString& filename)
         p->set_project_filename(filename);
 }
 
-void Plater::add_model()
+void Plater::add_model(bool imperial_units/* = false*/)
 {
     wxArrayString input_files;
     wxGetApp().import_model(this, input_files);
@@ -4354,7 +4472,7 @@ void Plater::add_model()
     }
 
     Plater::TakeSnapshot snapshot(this, snapshot_label);
-    load_files(paths, true, false);
+    load_files(paths, true, false, imperial_units);
 }
 
 void Plater::import_sl1_archive()
@@ -4375,16 +4493,16 @@ void Plater::extract_config_from_project()
     load_files(input_paths, false, true);
 }
 
-std::vector<size_t> Plater::load_files(const std::vector<fs::path>& input_files, bool load_model, bool load_config) { return p->load_files(input_files, load_model, load_config); }
+std::vector<size_t> Plater::load_files(const std::vector<fs::path>& input_files, bool load_model, bool load_config, bool imperial_units /*= false*/) { return p->load_files(input_files, load_model, load_config, imperial_units); }
 
 // To be called when providing a list of files to the GUI slic3r on command line.
-std::vector<size_t> Plater::load_files(const std::vector<std::string>& input_files, bool load_model, bool load_config)
+std::vector<size_t> Plater::load_files(const std::vector<std::string>& input_files, bool load_model, bool load_config, bool imperial_units /*= false*/)
 {
     std::vector<fs::path> paths;
     paths.reserve(input_files.size());
     for (const std::string& path : input_files)
         paths.emplace_back(path);
-    return p->load_files(paths, load_model, load_config);
+    return p->load_files(paths, load_model, load_config, imperial_units);
 }
 
 void Plater::update() { p->update(); }
@@ -4524,6 +4642,37 @@ bool Plater::is_selection_empty() const
 void Plater::scale_selection_to_fit_print_volume()
 {
     p->scale_selection_to_fit_print_volume();
+}
+
+void Plater::convert_unit(bool from_imperial_unit)
+{
+    std::vector<int> obj_idxs, volume_idxs;
+    wxGetApp().obj_list()->get_selection_indexes(obj_idxs, volume_idxs);
+    if (obj_idxs.empty() && volume_idxs.empty())
+        return;
+
+    TakeSnapshot snapshot(this, from_imperial_unit ? _L("Convert from imperial units") : _L("Convert to imperial units"));
+    wxBusyCursor wait;
+
+    ModelObjectPtrs objects;
+    for (int obj_idx : obj_idxs) {
+        ModelObject *object = p->model.objects[obj_idx];
+        object->convert_units(objects, from_imperial_unit, volume_idxs);
+        remove(obj_idx);
+    }
+    p->load_model_objects(objects);
+    
+    Selection& selection = p->view3D->get_canvas3d()->get_selection();
+    size_t last_obj_idx = p->model.objects.size() - 1;
+
+    if (volume_idxs.empty()) {
+        for (size_t i = 0; i < objects.size(); ++i)
+            selection.add_object((unsigned int)(last_obj_idx - i), i == 0);
+    }
+    else {
+        for (int vol_idx : volume_idxs)
+            selection.add_volume(last_obj_idx, vol_idx, 0, false);
+    }
 }
 
 void Plater::cut(size_t obj_idx, size_t instance_idx, coordf_t z, bool keep_upper, bool keep_lower, bool rotate_lower)
@@ -4695,25 +4844,33 @@ void Plater::export_stl(bool extended, bool selection_only)
                             ? Transform3d::Identity()
                             : object->model_object()->instances[instance_idx]->get_transformation().get_matrix();
 
+                    TriangleMesh inst_mesh;
+
                     if (has_pad_mesh)
                     {
                         TriangleMesh inst_pad_mesh = pad_mesh;
                         inst_pad_mesh.transform(inst_transform, is_left_handed);
-                        mesh.merge(inst_pad_mesh);
+                        inst_mesh.merge(inst_pad_mesh);
                     }
 
                     if (has_supports_mesh)
                     {
                         TriangleMesh inst_supports_mesh = supports_mesh;
                         inst_supports_mesh.transform(inst_transform, is_left_handed);
-                        mesh.merge(inst_supports_mesh);
+                        inst_mesh.merge(inst_supports_mesh);
                     }
 
                     TriangleMesh inst_object_mesh = object->get_mesh_to_print();
                     inst_object_mesh.transform(mesh_trafo_inv);
                     inst_object_mesh.transform(inst_transform, is_left_handed);
 
-                    mesh.merge(inst_object_mesh);
+                    inst_mesh.merge(inst_object_mesh);
+
+                    // ensure that the instance lays on the bed
+                    inst_mesh.translate(0.0f, 0.0f, -inst_mesh.bounding_box().min[2]);
+
+                    // merge instance with global mesh
+                    mesh.merge(inst_mesh);
 
                     if (one_inst_only)
                         break;
@@ -5184,7 +5341,7 @@ std::vector<std::string> Plater::get_colors_for_color_print() const
     colors.reserve(colors.size() + p->model.custom_gcode_per_print_z.gcodes.size());
 
     for (const CustomGCode::Item& code : p->model.custom_gcode_per_print_z.gcodes)
-        if (code.gcode == ColorChangeCode)
+        if (code.type == CustomGCode::ColorChange)
             colors.emplace_back(code.color);
 
     return colors;
@@ -5352,7 +5509,10 @@ void Plater::show_action_buttons(const bool ready_to_slice) const { p->show_acti
 
 void Plater::copy_selection_to_clipboard()
 {
-    if (can_copy_to_clipboard())
+    // At first try to copy selected values to the ObjectList's clipboard
+    // to check if Settings or Layers are selected in the list
+    // and then copy to 3DCanvas's clipboard if not
+    if (can_copy_to_clipboard() && !p->sidebar->obj_list()->copy_to_clipboard())
         p->view3D->get_canvas3d()->get_selection().copy_to_clipboard();
 }
 
@@ -5362,7 +5522,12 @@ void Plater::paste_from_clipboard()
         return;
 
     Plater::TakeSnapshot snapshot(this, _L("Paste From Clipboard"));
-    p->view3D->get_canvas3d()->get_selection().paste_from_clipboard();
+
+    // At first try to paste values from the ObjectList's clipboard
+    // to check if Settings or Layers were copied
+    // and then paste from the 3DCanvas's clipboard if not
+    if (!p->sidebar->obj_list()->paste_from_clipboard())
+        p->view3D->get_canvas3d()->get_selection().paste_from_clipboard();
 }
 
 void Plater::search(bool plater_is_active)
@@ -5403,9 +5568,25 @@ void Plater::msw_rescale()
     GetParent()->Layout();
 }
 
+void Plater::sys_color_changed()
+{
+    p->sidebar->sys_color_changed();
+
+    // msw_rescale_menu updates just icons, so use it
+    p->msw_rescale_object_menu();
+
+    Layout();
+    GetParent()->Layout();
+}
+
 bool Plater::init_view_toolbar()
 {
     return p->init_view_toolbar();
+}
+
+bool Plater::init_collapse_toolbar()
+{
+    return p->init_collapse_toolbar();
 }
 
 const Camera& Plater::get_camera() const
@@ -5417,6 +5598,19 @@ Camera& Plater::get_camera()
 {
     return p->camera;
 }
+
+#if ENABLE_ENVIRONMENT_MAP
+void Plater::init_environment_texture()
+{
+    if (p->environment_texture.get_id() == 0)
+        p->environment_texture.load_from_file(resources_dir() + "/icons/Pmetal_001.png", false, GLTexture::SingleThreaded, false);
+}
+
+unsigned int Plater::get_environment_texture_id() const
+{
+    return p->environment_texture.get_id();
+}
+#endif // ENABLE_ENVIRONMENT_MAP
 
 const Bed3D& Plater::get_bed() const
 {
@@ -5436,6 +5630,16 @@ const GLToolbar& Plater::get_view_toolbar() const
 GLToolbar& Plater::get_view_toolbar()
 {
     return p->view_toolbar;
+}
+
+const GLToolbar& Plater::get_collapse_toolbar() const
+{
+    return p->collapse_toolbar;
+}
+
+GLToolbar& Plater::get_collapse_toolbar()
+{
+    return p->collapse_toolbar;
 }
 
 const Mouse3DController& Plater::get_mouse3d_controller() const
@@ -5463,7 +5667,7 @@ bool Plater::can_paste_from_clipboard() const
     const Selection& selection = p->view3D->get_canvas3d()->get_selection();
     const Selection::Clipboard& clipboard = selection.get_clipboard();
 
-    if (clipboard.is_empty())
+    if (clipboard.is_empty() && p->sidebar->obj_list()->clipboard_is_empty())
         return false;
 
     if ((wxGetApp().preset_bundle->printers.get_edited_preset().printer_technology() == ptSLA) && !clipboard.is_sla_compliant())
