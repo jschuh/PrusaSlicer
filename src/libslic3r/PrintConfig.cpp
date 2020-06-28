@@ -238,6 +238,16 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(1));
 
+    def = this->add("bridge_infill_threshold", coFloat);
+    def->label = L("Bridge infill threshold");
+    def->tooltip = L("Forces bridge settings for the layer above infill where voids are larger than the specified area. "
+                    "The infill void area is computed from the infill density and infill extrusion width. "
+                    "Set to zero to force bridge settings for any layer above non-solid infill.");
+    def->sidetext = L("mm²");
+    def->min = 0;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(25.));
+
     def = this->add("bridge_speed", coFloat);
     def->label = L("Bridges");
     def->category = L("Speed");
