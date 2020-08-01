@@ -106,7 +106,7 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, wxDEFAULT_FRAME_S
 	m_statusbar->embed(this);
     m_statusbar->set_status_text(_(L("Version")) + " " +
 		SLIC3R_VERSION +
-		_(L(" - Remember to check for updates at http://github.com/prusa3d/PrusaSlicer/releases")));
+		_(L(" - Remember to check for updates at https://github.com/prusa3d/PrusaSlicer/releases")));
 
     /* Load default preset bitmaps before a tabpanel initialization,
      * but after filling of an em_unit value 
@@ -141,7 +141,9 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, wxDEFAULT_FRAME_S
 #endif // !ENABLE_LAYOUT_NO_RESTART
 
     // initialize layout
-    auto sizer = new wxBoxSizer(wxVERTICAL);
+    m_main_sizer = new wxBoxSizer(wxVERTICAL);
+    wxSizer* sizer = new wxBoxSizer(wxVERTICAL);
+    sizer->Add(m_main_sizer, 1, wxEXPAND);
 #if ENABLE_LAYOUT_NO_RESTART
     SetSizer(sizer);
     // initialize layout from config
@@ -293,7 +295,7 @@ void MainFrame::update_layout()
         if (m_layout == ESettingsLayout::Dlg)
             rescale_dialog_after_dpi_change(*this, m_settings_dialog, ERescaleTarget::Mainframe);
 
-        clean_sizer(GetSizer());
+        clean_sizer(m_main_sizer);
         clean_sizer(m_settings_dialog.GetSizer());
 
         if (m_settings_dialog.IsShown())
@@ -332,16 +334,16 @@ void MainFrame::update_layout()
     {
         m_plater->Reparent(m_tabpanel);
         m_tabpanel->InsertPage(0, m_plater, _L("Plater"));
-        GetSizer()->Add(m_tabpanel, 1, wxEXPAND);
+        m_main_sizer->Add(m_tabpanel, 1, wxEXPAND);
         m_plater->Show();
         m_tabpanel->Show();
         break;
     }
     case ESettingsLayout::New:
     {
-        GetSizer()->Add(m_plater, 1, wxEXPAND);
+        m_main_sizer->Add(m_plater, 1, wxEXPAND);
         m_tabpanel->Hide();
-        GetSizer()->Add(m_tabpanel, 1, wxEXPAND);
+        m_main_sizer->Add(m_tabpanel, 1, wxEXPAND);
         m_plater_page = new wxPanel(m_tabpanel);
         m_tabpanel->InsertPage(0, m_plater_page, _L("Plater")); // empty panel just for Plater tab */
         m_plater->Show();
@@ -349,7 +351,7 @@ void MainFrame::update_layout()
     }
     case ESettingsLayout::Dlg:
     {
-        GetSizer()->Add(m_plater, 1, wxEXPAND);
+        m_main_sizer->Add(m_plater, 1, wxEXPAND);
         m_tabpanel->Reparent(&m_settings_dialog);
         m_settings_dialog.GetSizer()->Add(m_tabpanel, 1, wxEXPAND);
 
@@ -907,7 +909,7 @@ void MainFrame::init_menubar()
 
         wxMenu* export_menu = new wxMenu();
         wxMenuItem* item_export_gcode = append_menu_item(export_menu, wxID_ANY, _(L("Export &G-code")) + dots +"\tCtrl+G", _(L("Export current plate as G-code")),
-            [this](wxCommandEvent&) { if (m_plater) m_plater->export_gcode(); }, "export_gcode", nullptr,
+            [this](wxCommandEvent&) { if (m_plater) m_plater->export_gcode(false); }, "export_gcode", nullptr,
             [this](){return can_export_gcode(); }, this);
         m_changeable_menu_items.push_back(item_export_gcode);
         wxMenuItem* item_send_gcode = append_menu_item(export_menu, wxID_ANY, _(L("S&end G-code")) + dots +"\tCtrl+Shift+G", _(L("Send to print current plate as G-code")),
@@ -1139,7 +1141,7 @@ void MainFrame::init_menubar()
         append_menu_item(helpMenu, wxID_ANY, _(L("Prusa 3D &Drivers")), _(L("Open the Prusa3D drivers download page in your browser")), 
             [this](wxCommandEvent&) { wxGetApp().open_web_page_localized("https://www.prusa3d.com/downloads"); }); 
         append_menu_item(helpMenu, wxID_ANY, _(L("Software &Releases")), _(L("Open the software releases page in your browser")), 
-            [this](wxCommandEvent&) { wxLaunchDefaultBrowser("http://github.com/prusa3d/PrusaSlicer/releases"); });
+            [this](wxCommandEvent&) { wxLaunchDefaultBrowser("https://github.com/prusa3d/PrusaSlicer/releases"); });
 //#        my $versioncheck = $self->_append_menu_item($helpMenu, "Check for &Updates...", "Check for new Slic3r versions", sub{
 //#            wxTheApp->check_version(1);
 //#        });
@@ -1156,7 +1158,7 @@ void MainFrame::init_menubar()
         append_menu_item(helpMenu, wxID_ANY, _(L("Show &Configuration Folder")), _(L("Show user configuration folder (datadir)")),
             [this](wxCommandEvent&) { Slic3r::GUI::desktop_open_datadir_folder(); });
         append_menu_item(helpMenu, wxID_ANY, _(L("Report an I&ssue")), wxString::Format(_(L("Report an issue on %s")), SLIC3R_APP_NAME), 
-            [this](wxCommandEvent&) { wxLaunchDefaultBrowser("http://github.com/prusa3d/slic3r/issues/new"); });
+            [this](wxCommandEvent&) { wxLaunchDefaultBrowser("https://github.com/prusa3d/slic3r/issues/new"); });
         append_menu_item(helpMenu, wxID_ANY, wxString::Format(_(L("&About %s")), SLIC3R_APP_NAME), _(L("Show about dialog")),
             [this](wxCommandEvent&) { Slic3r::GUI::about(); });
         helpMenu->AppendSeparator();
@@ -1301,10 +1303,10 @@ void MainFrame::quick_slice(const int qs)
     }
 
     // show processbar dialog
-    m_progress_dialog = new wxProgressDialog(_(L("Slicing")) + dots, 
-    // TRN "Processing input_file_basename"
-                                             from_u8((boost::format(_utf8(L("Processing %s"))) % (input_file_basename + dots)).str()),
-        100, this, 4);
+    m_progress_dialog = new wxProgressDialog(_L("Slicing") + dots,
+        // TRN "Processing input_file_basename"
+        from_u8((boost::format(_utf8(L("Processing %s"))) % (input_file_basename + dots)).str()),
+        100, nullptr, wxPD_AUTO_HIDE);
     m_progress_dialog->Pulse();
     {
 //         my @warnings = ();
@@ -1525,6 +1527,7 @@ void MainFrame::load_config(const DynamicPrintConfig& config)
 
 void MainFrame::select_tab(size_t tab/* = size_t(-1)*/)
 {
+    bool tabpanel_was_hidden = false;
 #if ENABLE_LAYOUT_NO_RESTART
     if (m_layout == ESettingsLayout::Dlg) {
 #else
@@ -1555,6 +1558,7 @@ void MainFrame::select_tab(size_t tab/* = size_t(-1)*/)
         if (m_settings_dialog.IsShown())
             m_settings_dialog.SetFocus();
         else {
+            tabpanel_was_hidden = true;
             m_tabpanel->Show();
             m_settings_dialog.Show();
         }
@@ -1573,13 +1577,11 @@ void MainFrame::select_tab(size_t tab/* = size_t(-1)*/)
     }
 #if ENABLE_LAYOUT_NO_RESTART
     else if (m_layout == ESettingsLayout::New) {
+        m_main_sizer->Show(m_plater, tab == 0);
+        tabpanel_was_hidden = !m_main_sizer->IsShown(m_tabpanel);
+        m_main_sizer->Show(m_tabpanel, tab != 0);
 #else
     else if (m_layout == slNew) {
-#endif // ENABLE_LAYOUT_NO_RESTART
-#if ENABLE_LAYOUT_NO_RESTART
-        GetSizer()->Show(m_plater, tab == 0);
-        GetSizer()->Show(m_tabpanel, tab != 0);
-#else
         m_plater->Show(tab == 0);
         m_tabpanel->Show(tab != 0);
 #endif // ENABLE_LAYOUT_NO_RESTART
@@ -1589,6 +1591,14 @@ void MainFrame::select_tab(size_t tab/* = size_t(-1)*/)
             m_plater->SetFocus();
         Layout();
     }
+
+    // When we run application in ESettingsLayout::New or ESettingsLayout::Dlg mode, tabpanel is hidden from the very beginning
+    // and as a result Tab::update_changed_tree_ui() function couldn't update m_is_nonsys_values values,
+    // which are used for update TreeCtrl and "revert_buttons".
+    // So, force the call of this function for Tabs, if tab panel was hidden
+    if (tabpanel_was_hidden)
+        for (auto tab : wxGetApp().tabs_list)
+            tab->update_changed_tree_ui();
 
     // when tab == -1, it means we should show the last selected tab
 #if ENABLE_LAYOUT_NO_RESTART

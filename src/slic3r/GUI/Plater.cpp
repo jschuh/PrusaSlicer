@@ -929,7 +929,7 @@ Sidebar::Sidebar(Plater *parent)
     {
         const bool export_gcode_after_slicing = wxGetKeyState(WXK_SHIFT);
         if (export_gcode_after_slicing)
-            p->plater->export_gcode();
+            p->plater->export_gcode(true);
         else
             p->plater->reslice();
         p->plater->select_view_3D("Preview");
@@ -2210,17 +2210,17 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
     }
 
     const auto loading = _L("Loading") + dots;
-    wxProgressDialog dlg(loading, loading);
+    wxProgressDialog dlg(loading, "", 100, q, wxPD_AUTO_HIDE);
     dlg.Pulse();
 
     auto *new_model = (!load_model || one_by_one) ? nullptr : new Slic3r::Model();
     std::vector<size_t> obj_idxs;
 
-    for (size_t i = 0; i < input_files.size(); i++) {
+    for (size_t i = 0; i < input_files.size(); ++i) {
         const auto &path = input_files[i];
         const auto filename = path.filename();
-        const auto dlg_info = format_wxstr(_L("Processing input file %s"), from_path(filename)) + "\n";
-        dlg.Update(100 * i / input_files.size(), dlg_info);
+        const auto dlg_info = _L("Loading file") + ": " + from_path(filename);
+        dlg.Update(static_cast<int>(100.0f * static_cast<float>(i) / static_cast<float>(input_files.size())), dlg_info);
 
         const bool type_3mf = std::regex_match(path.string(), pattern_3mf);
         const bool type_zip_amf = !type_3mf && std::regex_match(path.string(), pattern_zip_amf);
@@ -3413,6 +3413,27 @@ void Plater::priv::on_slicing_update(SlicingStatusEvent &evt)
         // Update the SLA preview. Only called if not RELOAD_SLA_SUPPORT_POINTS, as the block above will refresh the preview anyways.
         this->preview->reload_print();
     }
+
+    if (evt.status.flags & (PrintBase::SlicingStatus::UPDATE_PRINT_STEP_WARNINGS | PrintBase::SlicingStatus::UPDATE_PRINT_OBJECT_STEP_WARNINGS)) {
+        // Update notification center with warnings of object_id and its warning_step.
+        ObjectID object_id = evt.status.warning_object_id;
+        int warning_step = evt.status.warning_step;
+        PrintStateBase::StateWithWarnings state;
+        if (evt.status.flags & PrintBase::SlicingStatus::UPDATE_PRINT_STEP_WARNINGS) {
+            state = this->printer_technology == ptFFF ? 
+                this->fff_print.step_state_with_warnings(static_cast<PrintStep>(warning_step)) :
+                this->sla_print.step_state_with_warnings(static_cast<SLAPrintStep>(warning_step));
+        } else if (this->printer_technology == ptFFF) {
+            const PrintObject *print_object = this->fff_print.get_object(object_id);
+            if (print_object)
+                state = print_object->step_state_with_warnings(static_cast<PrintObjectStep>(warning_step));
+        } else {
+            const SLAPrintObject *print_object = this->sla_print.get_object(object_id);
+            if (print_object)
+                state = print_object->step_state_with_warnings(static_cast<SLAPrintObjectStep>(warning_step));
+        }
+        // Now process state.warnings.
+    }
 }
 
 void Plater::priv::on_slicing_completed(wxCommandEvent &)
@@ -3429,7 +3450,7 @@ void Plater::priv::on_slicing_completed(wxCommandEvent &)
         break;
     default: break;
     }
-}
+} 
 
 void Plater::priv::on_process_completed(wxCommandEvent &evt)
 {
@@ -3489,7 +3510,10 @@ void Plater::priv::on_process_completed(wxCommandEvent &evt)
         show_action_buttons(true);
     }
     else if (this->writing_to_removable_device || wxGetApp().get_mode() == comSimple)
+	{
+		wxGetApp().removable_drive_manager()->set_exporting_finished(true);
 		show_action_buttons(false);
+	}
     this->writing_to_removable_device = false;
 }
 
