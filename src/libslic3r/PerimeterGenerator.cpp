@@ -193,45 +193,85 @@ static ExtrusionEntityCollection traverse_loops(const PerimeterGenerator &perime
         // detect overhanging/bridging perimeters
         ExtrusionPaths paths;
         const Polygon &polygon = loop.fuzzify ? fuzzified : loop.polygon;
+        Polylines polylines;
+        bool needs_reorder = false;
+
         if (loop.fuzzify) {
             fuzzified = loop.polygon;
             fuzzy_polygon(fuzzified, scaled<float>(perimeter_generator.config->fuzzy_skin_thickness.value), scaled<float>(perimeter_generator.config->fuzzy_skin_point_dist.value));
         }
+
         if (perimeter_generator.config->overhangs && perimeter_generator.layer_id > perimeter_generator.object_config->raft_layers
-            && ! ((perimeter_generator.object_config->support_material || perimeter_generator.object_config->support_material_enforce_layers > 0) && 
-                  perimeter_generator.object_config->support_material_contact_distance.value == 0)) {
-            // get non-overhang paths by intersecting this loop with the grown lower slices
-            extrusion_paths_append(
-                paths,
-                intersection_pl({ polygon }, perimeter_generator.lower_slices_polygons()),
-                role,
-                is_external ? perimeter_generator.ext_mm3_per_mm()           : perimeter_generator.mm3_per_mm(),
-                is_external ? perimeter_generator.ext_perimeter_flow.width() : perimeter_generator.perimeter_flow.width(),
-                (float)perimeter_generator.layer_height);
-            
+            && !((perimeter_generator.object_config->support_material || perimeter_generator.object_config->support_material_enforce_layers > 0) &&
+                perimeter_generator.object_config->support_material_contact_distance.value == 0)) {
             // get overhang paths by checking what parts of this loop fall 
             // outside the grown lower slices (thus where the distance between
             // the loop centerline and original lower slices is >= half nozzle diameter
-            extrusion_paths_append(
-                paths,
-                diff_pl({ polygon }, perimeter_generator.lower_slices_polygons()),
-                erOverhangPerimeter,
-                perimeter_generator.mm3_per_mm_overhang(),
-                perimeter_generator.overhang_flow.width(),
-                perimeter_generator.overhang_flow.height());
-            
-            // Reapply the nearest point search for starting point.
-            // We allow polyline reversal because Clipper may have randomly reversed polylines during clipping.
-            chain_and_reorder_extrusion_paths(paths, &paths.front().first_point());
-        } else {
-            ExtrusionPath path(role);
-            path.polyline   = polygon.split_at_first_point();
-            path.mm3_per_mm = is_external ? perimeter_generator.ext_mm3_per_mm()           : perimeter_generator.mm3_per_mm();
-            path.width      = is_external ? perimeter_generator.ext_perimeter_flow.width() : perimeter_generator.perimeter_flow.width();
-            path.height     = (float)perimeter_generator.layer_height;
-            paths.push_back(path);
+            Polylines bridge_polylines = std::move(diff_pl({ polygon }, perimeter_generator.lower_slices_polygons()));
+            if (!bridge_polylines.empty()) {
+                static const float bridgeAnchorLength = scaled<float>(1.f);
+                // get non-overhang paths by intersecting this loop with the grown lower slices
+                polylines = std::move(intersection_pl({ polygon }, perimeter_generator.lower_slices_polygons()));
+                // extend the bridge polyline to get a more solid bridge anchor
+                for (auto &bridge_line : bridge_polylines) {
+                    // extend the end of the bridge extrusion
+                    for (auto line = polylines.begin(); line != polylines.end(); ++line) {
+                        if (bridge_line.first_point() == line->first_point())
+                            bridge_line.reverse();
+                        if (bridge_line.last_point() == line->first_point()) {
+                            Polyline tmp;
+                            line->split_at_distance(bridgeAnchorLength, &tmp, &(*line));
+                            if (!tmp.empty())
+                                bridge_line.points.insert(bridge_line.points.end(), tmp.points.begin() + 1, tmp.points.end());
+                            if (line->empty())
+                                polylines.erase(line);
+                            break;
+                        }
+                    }
+                    // extend start of the bridge extrusion
+                    for (auto line = polylines.begin(); line != polylines.end(); ++line) {
+                        if (bridge_line.last_point() == line->last_point())
+                            bridge_line.reverse();
+                        if (bridge_line.first_point() == line->last_point()) {
+                            Polyline tmp;
+                            line->split_at_distance(-bridgeAnchorLength, &tmp, &(*line));
+                            if (!tmp.empty())
+                                bridge_line.points.insert(bridge_line.points.begin(), tmp.points.begin(), tmp.points.end() - 1);
+                            if (line->empty())
+                                polylines.erase(line);
+                            break;
+                        }
+                    }
+                }
+                extrusion_paths_append(
+                    paths,
+                    bridge_polylines,
+                    erOverhangPerimeter,
+                    perimeter_generator.mm3_per_mm_overhang(),
+                    perimeter_generator.overhang_flow.width(),
+                    perimeter_generator.overhang_flow.height());
+                needs_reorder = true;
+            }
         }
-        
+
+        // Create polylines if we had no bridges.
+        if (!needs_reorder && polylines.empty())
+            polylines.push_back(polygon.split_at_first_point());
+
+        extrusion_paths_append(
+            paths,
+            polylines,
+            role,
+            is_external ? perimeter_generator.ext_mm3_per_mm() : perimeter_generator.mm3_per_mm(),
+            is_external ? perimeter_generator.ext_perimeter_flow.width() : perimeter_generator.perimeter_flow.width(),
+            (float)perimeter_generator.layer_height);
+
+        // Reapply the nearest point search for starting point.
+        // We allow polyline reversal because Clipper may have randomly reversed polylines during clipping.
+        if (needs_reorder) {
+            chain_and_reorder_extrusion_paths(paths, &paths.front().first_point());
+        }
+
         coll.append(ExtrusionLoop(std::move(paths), loop_role));
     }
     

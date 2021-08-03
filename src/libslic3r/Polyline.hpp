@@ -74,6 +74,7 @@ public:
     void simplify(double tolerance);
     template <class T> void simplify_by_visibility(const T &area);
     void split_at(const Point &point, Polyline* p1, Polyline* p2) const;
+    void split_at_distance(double distance, Polyline* p1, Polyline* p2) const;
     bool is_straight() const;
     bool is_closed() const { return this->points.front() == this->points.back(); }
 };

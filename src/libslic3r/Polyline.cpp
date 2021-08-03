@@ -177,6 +177,67 @@ void Polyline::split_at(const Point &point, Polyline* p1, Polyline* p2) const
     }
 }
 
+void Polyline::split_at_distance(double distance, Polyline* p1, Polyline* p2) const
+{
+    // negative distance trims from the end, so reverse everything and recurse
+    if (distance < 0) {
+        Polyline tmp = *this;
+        tmp.reverse();
+        tmp.split_at_distance(-distance, p1, p2);
+        p1->reverse();
+        p2->reverse();
+        return;
+    }
+
+    // save a copy if this is not a destination
+    Points poly_copy;
+    Points const * poly = &points;
+    if (this == p1 || this == p2) {
+        poly_copy = this->points;
+        poly = &poly_copy;
+    }
+    p1->points.clear();
+    p2->points.clear();
+
+    // need at least two points to split
+    if (poly->size() < 2)
+        return;
+
+    // find the line to split at
+    double split_offset = distance;
+    size_t idx = 1;
+    for (; idx < poly->size(); ++idx) {
+        double line_length = Line((*poly)[idx - 1], (*poly)[idx]).length();
+        if (split_offset < line_length) {
+            split_offset = line_length - split_offset;
+            break;
+        }
+        split_offset -= line_length;
+    }
+
+    // create first half
+    if (distance != 0.f) {
+        p1->points.reserve(idx + (idx == poly->size()) ? 0 : 1);
+        p1->points.insert(p1->points.end(), poly->begin(), poly->begin() + idx);
+        // done if second half is empty
+        if (idx == poly->size())
+            return;
+        p1->points.push_back((*poly)[idx]);
+    }
+
+    // split the line if needed
+    if (split_offset != 0.f) {
+        p1->clip_end(split_offset);
+        p2->points.reserve(poly->size() + 1);
+        p2->points.push_back(p1->last_point());
+    } else {
+        p2->points.reserve(poly->size());
+    }
+
+    // create second half
+    p2->points.insert(p2->points.end(), poly->begin() + idx, poly->end());
+}
+
 bool Polyline::is_straight() const
 {
     // Check that each segment's direction is equal to the line connecting
