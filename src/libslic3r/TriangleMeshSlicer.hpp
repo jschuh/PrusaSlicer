@@ -44,6 +44,9 @@ struct MeshSlicingParamsEx : public MeshSlicingParams
     // Resolution for contour simplification, unscaled.
     // 0 = don't simplify.
     double        resolution { 0 };
+    // nozzle diameter (needed for z_dithering optimization)
+    float         nozzle_diameter{0};
+    bool          z_dither{false}; // indicates if z-dithering is needed
 };
 
 // All the following slicing functions shall produce consistent results with the same mesh, same transformation matrix and slicing parameters.

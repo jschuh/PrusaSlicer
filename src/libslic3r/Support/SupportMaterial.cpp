@@ -1671,8 +1671,11 @@ SupportGeneratorLayersPtr PrintObjectSupportMaterial::top_contact_layers(
             for (size_t layer_id = range.begin(); layer_id < range.end(); ++ layer_id) 
             {
                 const Layer        &layer                = *object.layers()[layer_id];
-                Polygons            lower_layer_polygons = (layer_id == 0) ? Polygons() : to_polygons(object.layers()[layer_id - 1]->lslices);
-                SlicesMarginCache   slices_margin;
+                const Layer        *lower_layer = layer.lower_layer;
+                if (lower_layer == nullptr && layer_id != 0 && layer.dithered)
+                    continue;
+                Polygons          lower_layer_polygons = (layer_id == 0) ? Polygons() : to_polygons(lower_layer->lslices);
+                SlicesMarginCache slices_margin;
 
                 auto [overhang_polygons, contact_polygons, enforcer_polygons, no_interface_offset] =
                     detect_overhangs(layer, layer_id, lower_layer_polygons, *m_print_config, *m_object_config, annotations, slices_margin, m_support_params.gap_xy

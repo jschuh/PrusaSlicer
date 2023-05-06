@@ -806,7 +806,14 @@ std::tuple<SupportPoints, PartialObjects> check_stability(const PrintObject     
         }
     };
 
-    for (size_t layer_idx = 0; layer_idx < po->layer_count(); ++layer_idx) {
+    // Skip over dithered layers
+    assert(!po->get_layer(0)->dithered);
+    auto next_layer_index = [&po](size_t layer_idx) {
+        const Layer *upper_layer = po->get_layer(layer_idx)->upper_layer;
+        return upper_layer != nullptr ? upper_layer->id() : po->layer_count();
+    };
+
+    for (size_t layer_idx = 0; layer_idx < po->layer_count(); layer_idx = next_layer_index(layer_idx)) {
         cancel_func();
         const Layer *layer                 = po->get_layer(layer_idx);
         float        bottom_z              = layer->bottom_z();

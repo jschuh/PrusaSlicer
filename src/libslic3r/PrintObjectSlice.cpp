@@ -5,6 +5,7 @@
 #include "MultiMaterialSegmentation.hpp"
 #include "Print.hpp"
 #include "ShortestPath.hpp"
+#include "ZDither.hpp"
 
 #include <boost/log/trivial.hpp>
 
@@ -43,21 +44,26 @@ static std::vector<ExPolygons> slice_volume(
     const ModelVolume             &volume,
     const std::vector<float>      &zs, 
     const MeshSlicingParamsEx     &params,
+    std::vector<SubLayers> *     sublayers,
     const std::function<void()>   &throw_on_cancel_callback)
 {
-    std::vector<ExPolygons> layers;
-    if (! zs.empty()) {
-        indexed_triangle_set its = volume.mesh().its;
-        if (its.indices.size() > 0) {
-            MeshSlicingParamsEx params2 { params };
-            params2.trafo = params2.trafo * volume.get_matrix();
-            if (params2.trafo.rotation().determinant() < 0.)
-                its_flip_triangles(its);
-            layers = slice_mesh_ex(its, zs, params2, throw_on_cancel_callback);
-            throw_on_cancel_callback();
-        }
+    indexed_triangle_set its = volume.mesh().its;
+    if (zs.empty() || its.indices.size() == 0) {
+        return std::vector<ExPolygons>();
     }
-    return layers;
+
+    MeshSlicingParamsEx params2{params};
+    params2.trafo = params2.trafo * volume.get_matrix();
+    if (params2.trafo.rotation().determinant() < 0.)
+        its_flip_triangles(its);
+    std::vector<ExPolygons> expolys = slice_mesh_ex(its, zs, params2, throw_on_cancel_callback);
+    if (params2.z_dither) {
+        expolys = z_dither(its, zs, params2, expolys, sublayers, throw_on_cancel_callback);
+    } else {
+        *sublayers = std::vector<SubLayers>(expolys.size());
+    }
+    throw_on_cancel_callback();
+    return expolys;
 }
 
 // Slice single triangle mesh.
@@ -67,13 +73,14 @@ static std::vector<ExPolygons> slice_volume(
     const std::vector<float>                    &z,
     const std::vector<t_layer_height_range>     &ranges,
     const MeshSlicingParamsEx                   &params,
+    std::vector<SubLayers> *                    outSublayers,
     const std::function<void()>                 &throw_on_cancel_callback)
 {
     std::vector<ExPolygons> out;
     if (! z.empty() && ! ranges.empty()) {
         if (ranges.size() == 1 && z.front() >= ranges.front().first && z.back() < ranges.front().second) {
             // All layers fit into a single range.
-            out = slice_volume(volume, z, params, throw_on_cancel_callback);
+            out = slice_volume(volume, z, params, outSublayers, throw_on_cancel_callback);
         } else {
             std::vector<float>                     z_filtered;
             std::vector<std::pair<size_t, size_t>> n_filtered;
@@ -89,17 +96,21 @@ static std::vector<ExPolygons> slice_volume(
                     n_filtered.emplace_back(std::make_pair(first, i));
             }
             if (! n_filtered.empty()) {
-                std::vector<ExPolygons> layers = slice_volume(volume, z_filtered, params, throw_on_cancel_callback);
+                std::vector<SubLayers>  sublayers;
+                std::vector<ExPolygons> layers = slice_volume(volume, z_filtered, params, &sublayers, throw_on_cancel_callback);
                 out.assign(z.size(), ExPolygons());
                 i = 0;
                 for (const std::pair<size_t, size_t> &span : n_filtered)
-                    for (size_t j = span.first; j < span.second; ++ j)
-                        out[j] = std::move(layers[i ++]);
+                    for (size_t j = span.first; j < span.second; ++j) {
+                        out[j] = std::move(layers[i++]);
+                        outSublayers->emplace_back(std::move(sublayers[j]));
+                    }
             }
         }
     }
     return out;
 }
+
 
 struct VolumeSlices
 {
@@ -113,6 +124,12 @@ static inline bool model_volume_needs_slicing(const ModelVolume &mv)
     return type == ModelVolumeType::MODEL_PART || type == ModelVolumeType::NEGATIVE_VOLUME || type == ModelVolumeType::PARAMETER_MODIFIER;
 }
 
+struct VolumeSublayers
+{
+    ObjectID               volume_id;
+    std::vector<SubLayers> sublayers;
+};
+
 // Slice printable volumes, negative volumes and modifier volumes, sorted by ModelVolume::id().
 // Apply closing radius.
 // Apply positive XY compensation to ModelVolumeType::MODEL_PART and ModelVolumeType::PARAMETER_MODIFIER, not to ModelVolumeType::NEGATIVE_VOLUME.
@@ -124,12 +141,15 @@ static std::vector<VolumeSlices> slice_volumes_inner(
     ModelVolumePtrs                                           model_volumes,
     const std::vector<PrintObjectRegions::LayerRangeRegions> &layer_ranges,
     const std::vector<float>                                 &zs,
+    std::vector<VolumeSublayers> 							 *outSublayers,
     const std::function<void()>                              &throw_on_cancel_callback)
 {
     model_volumes_sort_by_id(model_volumes);
 
     std::vector<VolumeSlices> out;
     out.reserve(model_volumes.size());
+    outSublayers->clear();
+    outSublayers->reserve(model_volumes.size());
 
     std::vector<t_layer_height_range> slicing_ranges;
     if (layer_ranges.size() > 1)
@@ -140,6 +160,9 @@ static std::vector<VolumeSlices> slice_volumes_inner(
     params_base.extra_offset   = 0;
     params_base.trafo          = object_trafo;
     params_base.resolution     = print_config.resolution.value;
+    const std::vector<double> &diameters = print_config.nozzle_diameter.values;
+    params_base.nozzle_diameter = float(*std::min_element(diameters.begin(), diameters.end()));
+    params_base.z_dither        = print_object_config.z_dither;
 
     switch (print_object_config.slicing_mode.value) {
     case SlicingMode::Regular:    params_base.mode = MeshSlicingParams::SlicingMode::Regular; break;
@@ -161,7 +184,7 @@ static std::vector<VolumeSlices> slice_volumes_inner(
             if (layer_ranges.size() == 1) {
                 if (const PrintObjectRegions::LayerRangeRegions &layer_range = layer_ranges.front(); layer_range.has_volume(model_volume->id())) {
                     if (model_volume->is_model_part() && print_config.spiral_vase) {
-                        auto it = std::find_if(layer_range.volume_regions.begin(), layer_range.volume_regions.end(), 
+                        auto it = std::find_if(layer_range.volume_regions.begin(), layer_range.volume_regions.end(),
                             [model_volume](const auto &slice){ return model_volume == slice.model_volume; });
                         params.mode = MeshSlicingParams::SlicingMode::PositiveLargestContour;
                         // Slice the bottom layers with SlicingMode::Regular.
@@ -171,10 +194,12 @@ static std::vector<VolumeSlices> slice_volumes_inner(
                         for (; params.slicing_mode_normal_below_layer < zs.size() && zs[params.slicing_mode_normal_below_layer] < region_config.bottom_solid_min_thickness - EPSILON;
                             ++ params.slicing_mode_normal_below_layer);
                     }
-                    out.push_back({
-                        model_volume->id(), 
-                        slice_volume(*model_volume, zs, params, throw_on_cancel_callback)
-                    });
+                    std::vector<SubLayers>  sublayers;
+                    std::vector<ExPolygons> expoly = slice_volume(*model_volume, zs, params,
+                                                                  &sublayers,
+                                                                  throw_on_cancel_callback);
+                    out.push_back({model_volume->id(), std::move(expoly)});
+                    outSublayers->push_back({model_volume->id(), std::move(sublayers)});
                 }
             } else {
                 assert(! print_config.spiral_vase);
@@ -182,16 +207,20 @@ static std::vector<VolumeSlices> slice_volumes_inner(
                 for (const PrintObjectRegions::LayerRangeRegions &layer_range : layer_ranges)
                     if (layer_range.has_volume(model_volume->id()))
                         slicing_ranges.emplace_back(layer_range.layer_height_range);
-                if (! slicing_ranges.empty())
-                    out.push_back({ 
-                        model_volume->id(), 
-                        slice_volume(*model_volume, zs, slicing_ranges, params, throw_on_cancel_callback)
-                    });
+                if (!slicing_ranges.empty()) {
+                    std::vector<SubLayers>  sublayers;
+                    std::vector<ExPolygons> expoly = slice_volume(*model_volume, zs, slicing_ranges,
+                                                                  params, &sublayers,
+                                                                  throw_on_cancel_callback);
+                    out.push_back({model_volume->id(), std::move(expoly)});
+                    outSublayers->push_back({model_volume->id(), std::move(sublayers)});
+                }
             }
-            if (! out.empty() && out.back().slices.empty())
+            if (!out.empty() && out.back().slices.empty()) {
                 out.pop_back();
+                outSublayers->pop_back();
+            }
         }
-
     return out;
 }
 
@@ -221,7 +250,7 @@ static std::vector<PrintObjectRegions::LayerRangeRegions>::const_iterator layer_
 }
 
 static std::vector<PrintObjectRegions::LayerRangeRegions>::const_iterator layer_range_next(
-    const std::vector<PrintObjectRegions::LayerRangeRegions>            &layer_ranges, 
+    const std::vector<PrintObjectRegions::LayerRangeRegions>            &layer_ranges,
     std::vector<PrintObjectRegions::LayerRangeRegions>::const_iterator   it,
     double                                                               z)
 {
@@ -309,7 +338,7 @@ static std::vector<std::vector<ExPolygons>> slices_to_regions(
                 float z              = zs_complex[range.begin()].second;
                 auto  it_layer_range = layer_range_first(print_object_regions.layer_ranges, z);
                 // Per volume_regions slices at this Z height.
-                struct RegionSlice { 
+                struct RegionSlice {
                     ExPolygons  expolygons;
                     // Identifier of this region in PrintObjectRegions::all_regions
                     int         region_id;
@@ -385,6 +414,7 @@ static std::vector<std::vector<ExPolygons>> slices_to_regions(
                                 }
                             }
                         if (merged)
+                        // to handle region overlaps. Indeed, one may intentionally let the regions overlap to produce crossing perimeters
                             expolygons = closing_ex(expolygons, float(scale_(EPSILON)));
                         slices_by_region[temp_slices[i].region_id][z_idx] = std::move(expolygons);
                         i = j;
@@ -440,7 +470,7 @@ std::string fix_slicing_errors(LayerPtrs &layers, const std::function<void()> &t
                     // Collect outer contours and holes from the valid layers above & below.
                     Polygons outer;
                     outer.reserve(
-                        ((upper_surfaces == nullptr) ? 0 : upper_surfaces->size()) + 
+                        ((upper_surfaces == nullptr) ? 0 : upper_surfaces->size()) +
                         ((lower_surfaces == nullptr) ? 0 : lower_surfaces->size()));
                     size_t num_holes = 0;
                     if (upper_surfaces)
@@ -536,13 +566,23 @@ void PrintObject::slice()
     tbb::parallel_for(
         tbb::blocked_range<size_t>(1, m_layers.size()),
         [this](const tbb::blocked_range<size_t> &range) {
-            for (size_t layer_idx = range.begin(); layer_idx < range.end(); ++ layer_idx) {
-                m_print->throw_if_canceled();
-                Layer::build_up_down_graph(*m_layers[layer_idx - 1], *m_layers[layer_idx]);
+        for (size_t layer_idx = range.begin(); layer_idx < range.end(); ++layer_idx) {
+            m_print->throw_if_canceled();
+            // Layer::build_up_down_graph and subsequent support stability checks
+            // appear to get in trouble when multiple layers point to the same
+            // above/below layer as happens in case of z-dithering. For now I just avoid
+            // mixing dithered and non-dithered layers in the same graph.
+            Layer *above = m_layers[layer_idx];
+            Layer *below = above->lower_layer;
+            if (below != nullptr && above->dithered == below->dithered) {
+                Layer::build_up_down_graph(*below, *above);
             }
+            // Layer::build_up_down_graph(*m_layers[layer_idx - 1], *m_layers[layer_idx]);
+        }
         });
+       // });
     if (m_layers.empty())
-        throw Slic3r::SlicingError("No layers were detected. You might want to repair your STL file(s) or check their size or thickness and retry.\n");    
+        throw Slic3r::SlicingError("No layers were detected. You might want to repair your STL file(s) or check their size or thickness and retry.\n");
     this->set_done(posSlice);
 }
 
@@ -672,6 +712,97 @@ void apply_mm_segmentation(PrintObject &print_object, ThrowOnCancel throw_on_can
         });
 }
 
+Layer *make_dithered_layer(Layer *refLayer, double bottom, double top)
+{
+    coordf_t height  = refLayer->height;
+    coordf_t hi      = refLayer->slice_z + height / 2;
+    coordf_t lo      = refLayer->slice_z - height / 2;
+    coordf_t h_new   = height * (top - bottom);
+    Layer *  layer   = new Layer(refLayer->id(), refLayer->object(), h_new,
+                             refLayer->bottom_z() + height * coordf_t(top),
+                             refLayer->bottom_z() + height * coordf_t(bottom) + h_new / 2);
+    layer->dithered = true;
+    return layer;
+}
+
+void merge_sublayers_to_slices(std::vector<VolumeSlices> &   volume_slices,
+                               std::vector<VolumeSublayers> &volume_sublayers,
+                               int which, // 0 - bottom, 1 - halfUp, 2 - halfDn, 3 - top
+                               int from,
+                               int to)
+{
+    for (VolumeSublayers &sublayers : volume_sublayers) {
+        VolumeSlices &v_slices = volume_slices_find_by_id(volume_slices, sublayers.volume_id);
+        auto &        slices   = v_slices.slices;
+        if (which == 0)
+            slices.insert(slices.begin() + to, std::move(sublayers.sublayers[from].bottom_));
+        else if (which == 1)
+            slices.insert(slices.begin() + to, std::move(sublayers.sublayers[from].halfUp_));
+        else if (which == 2)
+            slices.insert(slices.begin() + to, std::move(sublayers.sublayers[from].halfDn_));
+        else if (which == 3)
+            slices.insert(slices.begin() + to, std::move(sublayers.sublayers[from].top_));
+        else
+            BOOST_LOG_TRIVIAL(error) << "merge_sublayers_to_slices illegal call";
+    }
+}
+
+LayerPtrs add_dithering_layers(const LayerPtrs &                   layers,
+                          std::vector<VolumeSlices> &   volume_slices,
+                          std::vector<VolumeSublayers> &volume_sublayers)
+{
+    LayerPtrs original(layers);
+    LayerPtrs resulting;
+    Layer *   newLayer[4];
+
+    for (int ll = 0; ll < original.size(); ll++) {
+        if (std::any_of(volume_sublayers.begin(), volume_sublayers.end(),
+                        [&ll](VolumeSublayers &v_sub) {
+                            return !v_sub.sublayers[ll].bottom_.empty();
+                        })) {
+            newLayer[0]              = make_dithered_layer(original[ll], 0., 0.25);
+            newLayer[0]->lower_layer = original[ll]->lower_layer;
+            merge_sublayers_to_slices(volume_slices, volume_sublayers, 0, ll, resulting.size());
+            resulting.push_back(newLayer[0]);
+        }
+        if (std::any_of(volume_sublayers.begin(), volume_sublayers.end(),
+                        [&ll](VolumeSublayers &v_sub) {
+                            return !v_sub.sublayers[ll].halfUp_.empty();
+                        })) {
+            newLayer[1]              = make_dithered_layer(original[ll], 0.25, 0.75);
+            newLayer[1]->lower_layer = newLayer[0]; // must be != nullptr
+            newLayer[0]->upper_layer = newLayer[1];
+            merge_sublayers_to_slices(volume_slices, volume_sublayers, 1, ll, resulting.size());
+            resulting.push_back(newLayer[1]);
+        }
+        if (std::any_of(volume_sublayers.begin(), volume_sublayers.end(),
+                        [&ll](VolumeSublayers &v_sub) {
+                            return !v_sub.sublayers[ll].halfDn_.empty();
+                        })) {
+            newLayer[2]              = make_dithered_layer(original[ll], 0.25, 0.75);
+            merge_sublayers_to_slices(volume_slices, volume_sublayers, 2, ll, resulting.size());
+            resulting.push_back(newLayer[2]);
+        }
+        if (std::any_of(volume_sublayers.begin(), volume_sublayers.end(),
+                        [&ll](VolumeSublayers &v_sub) {
+                            return !v_sub.sublayers[ll].top_.empty();
+                        })) {
+            newLayer[3]              = make_dithered_layer(original[ll], 0.75, 1.);
+            newLayer[3]->upper_layer = original[ll]->upper_layer;
+            newLayer[3]->lower_layer = newLayer[2]; // must be != nullptr
+            newLayer[2]->upper_layer = newLayer[3];
+            merge_sublayers_to_slices(volume_slices, volume_sublayers, 3, ll, resulting.size());
+            resulting.push_back(newLayer[3]);
+        }
+        resulting.push_back(original[ll]);
+    }
+    // Renumber
+    size_t start = original[0]->id();
+    for (size_t ll = 0; ll < resulting.size(); ll++)
+        resulting[ll]->set_id(start + ll);
+    return resulting;
+}
+
 // 1) Decides Z positions of the layers,
 // 2) Initializes layers and their regions
 // 3) Slices the object meshes
@@ -695,12 +826,25 @@ void PrintObject::slice_volumes()
             layer->m_regions.emplace_back(new LayerRegion(layer, pr.get()));
     }
 
-    std::vector<float>                   slice_zs      = zs_from_layers(m_layers);
+    std::vector<float>                   slice_zs      = zs_from_layers(m_layers, true);
+    std::vector<VolumeSublayers> volume_sublayers;
+    std::vector<VolumeSlices> volume_slices = slice_volumes_inner(print->config(), this->config(), this->trafo_centered(),
+        this->model_object()->volumes, m_shared_regions->layer_ranges, slice_zs, &volume_sublayers, throw_on_cancel_callback);
+
+    if (this->config().z_dither) {
+        m_layers = add_dithering_layers(m_layers, volume_slices, volume_sublayers);
+        for (Layer *layer : m_layers) {
+            if (layer->dithered) {
+                layer->m_regions.reserve(m_shared_regions->all_regions.size());
+                for (const std::unique_ptr<PrintRegion> &pr : m_shared_regions->all_regions)
+                    layer->m_regions.emplace_back(new LayerRegion(layer, pr.get()));
+            }
+        }
+        slice_zs = zs_from_layers(m_layers, false);
+    }
+
     std::vector<std::vector<ExPolygons>> region_slices = slices_to_regions(this->model_object()->volumes, *m_shared_regions, slice_zs,
-        slice_volumes_inner(
-            print->config(), this->config(), this->trafo_centered(),
-            this->model_object()->volumes, m_shared_regions->layer_ranges, slice_zs, throw_on_cancel_callback),
-        throw_on_cancel_callback);
+                                                                            std::move(volume_slices), throw_on_cancel_callback);
 
     for (size_t region_id = 0; region_id < region_slices.size(); ++ region_id) {
         std::vector<ExPolygons> &by_layer = region_slices[region_id];
@@ -723,7 +867,7 @@ void PrintObject::slice_volumes()
 
     // Is any ModelVolume MMU painted?
     if (const auto& volumes = this->model_object()->volumes;
-        m_print->config().nozzle_diameter.size() > 1 &&
+        m_print->config().nozzle_diameter.size() > 1 && !this->config().z_dither &&
         std::find_if(volumes.begin(), volumes.end(), [](const ModelVolume* v) { return !v->mmu_segmentation_facets.empty(); }) != volumes.end()) {
 
         // If XY Size compensation is also enabled, notify the user that XY Size compensation
@@ -830,7 +974,9 @@ std::vector<Polygons> PrintObject::slice_support_volumes(const ModelVolumeType m
     std::vector<Polygons> slices;
     if (it_volume != it_volume_end) {
         // Found at least a single support volume of model_volume_type.
-        std::vector<float> zs = zs_from_layers(this->layers());
+        // Exclude z of ditthered layers. Do we need to improve this?
+        std::vector<float> zs = zs_from_layers(this->layers(), true);
+        size_t             num_layers = this->layers().size();
         std::vector<char>  merge_layers;
         bool               merge = false;
         const Print       *print = this->print();
@@ -839,29 +985,41 @@ std::vector<Polygons> PrintObject::slice_support_volumes(const ModelVolumeType m
         params.trafo = this->trafo_centered();
         for (; it_volume != it_volume_end; ++ it_volume)
             if ((*it_volume)->type() == model_volume_type) {
-                std::vector<ExPolygons> slices2 = slice_volume(*(*it_volume), zs, params, throw_on_cancel_callback);
+                std::vector<SubLayers>  sublayers2;
+                std::vector<ExPolygons> slices2 = slice_volume(*(*it_volume), zs, params, &sublayers2, throw_on_cancel_callback);
                 if (slices.empty()) {
-                    slices.reserve(slices2.size());
-                    for (ExPolygons &src : slices2)
-                        slices.emplace_back(to_polygons(std::move(src)));
+                    slices.reserve(num_layers);
+                    size_t slice_idx = 0;
+                    for (size_t i = 0; i < num_layers; i++) {
+                        if (this->layers()[i]->dithered)
+                            slices.emplace_back(Polygons());
+                        else {
+                            slices.emplace_back(to_polygons(std::move(slices2[slice_idx])));
+                            slice_idx++;
+                        }
+                    }
                 } else if (!slices2.empty()) {
                     if (merge_layers.empty())
-                        merge_layers.assign(zs.size(), false);
-                    for (size_t i = 0; i < zs.size(); ++ i) {
-                        if (slices[i].empty())
-                            slices[i] = to_polygons(std::move(slices2[i]));
-                        else if (! slices2[i].empty()) {
-                            append(slices[i], to_polygons(std::move(slices2[i])));
-                            merge_layers[i] = true;
-                            merge = true;
+                        merge_layers.assign(num_layers, false);
+                    size_t slice_idx = 0;
+                    for (size_t i = 0; i < num_layers; ++ i) {
+                        if (!this->layers()[i]->dithered) {
+                            if (slices[i].empty())
+                                slices[i] = to_polygons(std::move(slices2[slice_idx]));
+                            else if (!slices2[slice_idx].empty()) {
+                                append(slices[i], to_polygons(std::move(slices2[slice_idx])));
+                                merge_layers[i] = true;
+                                merge           = true;
+                            }
+                            slice_idx++;
                         }
                     }
                 }
             }
         if (merge) {
             std::vector<Polygons*> to_merge;
-            to_merge.reserve(zs.size());
-            for (size_t i = 0; i < zs.size(); ++ i)
+            to_merge.reserve(num_layers);
+            for (size_t i = 0; i < num_layers; ++ i)
                 if (merge_layers[i])
                     to_merge.emplace_back(&slices[i]);
             tbb::parallel_for(

@@ -324,6 +324,7 @@ public:
     coordf_t            print_z;       // Z used for printing in unscaled coordinates
     coordf_t            height;        // layer height in unscaled coordinates
     coordf_t            bottom_z() const { return this->print_z - this->height; }
+    bool                dithered = false;  // is this is a layer produced by z-dithering.
 
     //Extrusions estimated to be seriously malformed, estimated during "Estimating curled extrusions" step. These lines should be avoided during fast travels.
     CurledLines         curled_lines;
@@ -391,6 +392,8 @@ protected:
     friend class PrintObject;
     friend std::vector<Layer*> new_layers(PrintObject*, const std::vector<coordf_t>&);
     friend std::string fix_slicing_errors(LayerPtrs&, const std::function<void()>&);
+    // Create dithering layer. bottom & top >= 0 and <= 1
+    friend Layer *make_dithered_layer(Layer *refLayer, double bottom, double top);
 
     Layer(size_t id, PrintObject *object, coordf_t height, coordf_t print_z, coordf_t slice_z) :
         upper_layer(nullptr), lower_layer(nullptr), 
@@ -455,12 +458,14 @@ protected:
 };
 
 template<typename LayerContainer>
-inline std::vector<float> zs_from_layers(const LayerContainer &layers)
+inline std::vector<float> zs_from_layers(const LayerContainer &layers, bool exclude_dithered = true)
 {
     std::vector<float> zs;
     zs.reserve(layers.size());
-    for (const Layer *l : layers)
-        zs.emplace_back((float)l->slice_z);
+    for (const Layer *l : layers) {
+        if (!(l->dithered && exclude_dithered))
+            zs.emplace_back((float) l->slice_z);
+    }
     return zs;
 }
 

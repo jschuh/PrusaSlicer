@@ -2377,6 +2377,14 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionInt(1));
 
+	def = this->add("z_dither", coBool);
+    def->label = L("Z-dither");
+    def->category = L("Layers and Perimeters");
+    def->tooltip = L("This experimental setting is used to halve stairstep effect on low slope surfaces. "
+        "Near slice periphery it introduces additional layers that are 25% and 50% of nominal layer height.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("slowdown_below_layer_time", coInts);
     def->label = L("Slow down if layer print time is below");
     def->tooltip = L("If layer print time is estimated below this number of seconds, print moves "

@@ -564,6 +564,13 @@ std::string Print::validate(std::vector<std::string>* warnings) const
                     return _u8L("Variable layer height is not supported with Organic supports.");
         }
 
+    if (m_default_object_config.z_dither) {
+        if (m_default_region_config.infill_every_layers > 1)
+            return _u8L("Z-dither slicing option is not compatible with option to combine infills of multiple layers.");
+        if (extruders.size() > 1) // Is there a better way to check for a possibility of multimaterial printing?
+            return _u8L("Z-dither slicing option is currently not supported for printers with multiple extruders.");
+    }
+
     if (this->has_wipe_tower() && ! m_objects.empty()) {
         // Make sure all extruders use same diameter filament and have the same nozzle diameter
         // EPSILON comparison is used for nozzles and 10 % tolerance is used for filaments

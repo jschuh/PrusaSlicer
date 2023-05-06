@@ -379,6 +379,8 @@ private:
 
     void slice_volumes();
     // Has any support (not counting the raft).
+    // find the next layer below or above idx; In case of z-dithering it may be different from incrementing/decrementing idx
+    int next_layer_index(size_t idx, bool lower) const;   // returns int to allow -1
     void detect_surfaces_type();
     void process_external_surfaces();
     void discover_vertical_shells();
