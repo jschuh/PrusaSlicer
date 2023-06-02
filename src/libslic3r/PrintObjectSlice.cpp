@@ -9,7 +9,7 @@
 #include <boost/log/trivial.hpp>
 
 #include <tbb/parallel_for.h>
-
+#include <tbb/concurrent_vector.h>
 
 namespace Slic3r {
 
@@ -751,22 +751,23 @@ void PrintObject::slice_volumes()
             float(scale_(m_config.elefant_foot_compensation.value)) :
         	0.f;
         // Uncompensated slices for the first layer in case the Elephant foot compensation is applied.
-	    ExPolygons  lslices_1st_layer;
-	    tbb::parallel_for(
+        tbb::concurrent_vector<ExPolygons> lslices_layers;
+        tbb::parallel_for(
 	        tbb::blocked_range<size_t>(0, m_layers.size()),
-			[this, xy_compensation_scaled, elephant_foot_compensation_scaled, &lslices_1st_layer](const tbb::blocked_range<size_t>& range) {
-	            for (size_t layer_id = range.begin(); layer_id < range.end(); ++ layer_id) {
+			[this, xy_compensation_scaled, elephant_foot_compensation_scaled, &lslices_layers](const tbb::blocked_range<size_t>& range) {
+                for (size_t layer_id = range.begin(); layer_id < range.end(); ++layer_id) {
+                    ExPolygons lslices_layer;
 	                m_print->throw_if_canceled();
 	                Layer *layer = m_layers[layer_id];
+	                float elfoot = std::max(elephant_foot_compensation_scaled - float(scale_(layer->bottom_z())), 0.f);
 	                // Apply size compensation and perform clipping of multi-part objects.
-	                float elfoot = (layer_id == 0) ? elephant_foot_compensation_scaled : 0.f;
 	                if (layer->m_regions.size() == 1) {
 	                    // Optimized version for a single region layer.
 	                    // Single region, growing or shrinking.
 	                    LayerRegion *layerm = layer->m_regions.front();
 	                    if (elfoot > 0) {
 		                    // Apply the elephant foot compensation and store the 1st layer slices without the Elephant foot compensation applied.
-		                    lslices_1st_layer = to_expolygons(std::move(layerm->m_slices.surfaces));
+		                    lslices_layer = to_expolygons(std::move(layerm->m_slices.surfaces));
 		                    float delta = xy_compensation_scaled;
 	                        if (delta > elfoot) {
 	                            delta -= elfoot;
@@ -776,12 +777,13 @@ void PrintObject::slice_volumes()
 							layerm->m_slices.set(
 								union_ex(
 									Slic3r::elephant_foot_compensation(
-										(delta == 0.f) ? lslices_1st_layer : offset_ex(lslices_1st_layer, delta), 
+										(delta == 0.f) ? lslices_layer : offset_ex(lslices_layer, delta), 
 	                            		layerm->flow(frExternalPerimeter), unscale<double>(elfoot))),
 								stInternal);
 							if (xy_compensation_scaled < 0.f)
-								lslices_1st_layer = offset_ex(std::move(lslices_1st_layer), xy_compensation_scaled);
-	                    } else if (xy_compensation_scaled < 0.f) {
+								lslices_layer = offset_ex(std::move(lslices_layer), xy_compensation_scaled);
+                            lslices_layers.grow_by(1, lslices_layer);
+                        } else if (xy_compensation_scaled < 0.f) {
 	                        // Apply the XY compensation.
 	                        layerm->m_slices.set(
                                 offset_ex(to_expolygons(std::move(layerm->m_slices.surfaces)), xy_compensation_scaled),
@@ -793,10 +795,11 @@ void PrintObject::slice_volumes()
 	                        Polygons trimming;
 	                        static const float eps = float(scale_(m_config.slice_closing_radius.value) * 1.5);
 	                        if (elfoot > 0.f) {
-	                        	lslices_1st_layer = offset_ex(layer->merged(eps), std::min(xy_compensation_scaled, 0.f) - eps);
-								trimming = to_polygons(Slic3r::elephant_foot_compensation(lslices_1st_layer,
+	                        	lslices_layer = offset_ex(layer->merged(eps), std::min(xy_compensation_scaled, 0.f) - eps);
+								trimming = to_polygons(Slic3r::elephant_foot_compensation(lslices_layer,
 									layer->m_regions.front()->flow(frExternalPerimeter), unscale<double>(elfoot)));
-	                        } else
+                                lslices_layers.grow_by(1, lslices_layer);
+                            } else
 		                        trimming = offset(layer->merged(float(SCALED_EPSILON)), xy_compensation_scaled - float(SCALED_EPSILON));
 	                        for (size_t region_id = 0; region_id < layer->m_regions.size(); ++ region_id)
 	                            layer->m_regions[region_id]->trim_surfaces(trimming);
@@ -804,17 +807,20 @@ void PrintObject::slice_volumes()
 	                }
 	                // Merge all regions' slices to get islands sorted topologically, chain them by a shortest path in separate index list
 	                layer->make_slices();
-	            }
+                }
 	        });
-	    if (elephant_foot_compensation_scaled > 0.f && ! m_layers.empty()) {
-	    	// The Elephant foot has been compensated, therefore the 1st layer's lslices are shrank with the Elephant foot compensation value.
-	    	// Store the uncompensated value there.
-            //FIXME is this operation needed? MMU painting and brim now have to do work arounds to work with compensated layer, not with the uncompensated layer.
+
+        for (size_t i = 0; i < lslices_layers.size(); ++i) {
+            // The Elephant foot has been compensated, therefore the compensated layer's lslices are shrank with the Elephant foot
+            // compensation value. Store the uncompensated value there.
+            // FIXME is this operation needed? MMU painting and brim now have to do work arounds to work with compensated layer, not with
+            // the uncompensated layer.
             // There may be subtle issues removing this block such as support raft sticking too well with the first object layer.
-            Layer &layer = *m_layers.front();
-	    	assert(layer.id() == 0);
-			layer.lslices = std::move(lslices_1st_layer);
-            layer.lslice_indices_sorted_by_print_order = chain_expolygons(layer.lslices);
+            if (!m_layers.empty()) {
+                Layer &layer = *m_layers[i];
+			    layer.lslices = std::move(lslices_layers[i]);
+                layer.lslice_indices_sorted_by_print_order = chain_expolygons(layer.lslices);
+            }
 		}
 	}
 
