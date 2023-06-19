@@ -65,7 +65,7 @@ Flow LayerRegion::bridging_flow(FlowRole role, bool force_thick_bridges) const
         return Flow::bridging_flow(float(sqrt(region_config.bridge_flow_ratio)) * nozzle_diameter, nozzle_diameter);
     } else {
         // The same way as other slicers: Use normal extrusions. Apply bridge_flow_ratio while maintaining the original spacing.
-        return this->flow(role).with_flow_ratio(region_config.bridge_flow_ratio);
+        return this->flow(frExternalPerimeter).with_flow_ratio(region_config.bridge_flow_ratio);
     }
 }
 
